@@ -28,7 +28,7 @@ try:
     # mypyc doesn't properly handle import from of submodules that we
     # don't have stubs for, hence the hacky double import
     import lxml.etree  # type: ignore  # noqa: F401
-    from lxml import etree  # type: ignore
+    from lxml import etree
     LXML_INSTALLED = True
 except ImportError:
     LXML_INSTALLED = False
@@ -201,19 +201,19 @@ class AnyExpressionsReporter(AbstractReporter):
                 type_map: Dict[Expression, Type],
                 options: Options) -> None:
         visitor = stats.StatisticsVisitor(inferred=True,
-                                          filename=tree.fullname(),
+                                          filename=tree.fullname,
                                           modules=modules,
                                           typemap=type_map,
                                           all_nodes=True,
                                           visit_untyped_defs=False)
         tree.accept(visitor)
-        self.any_types_counter[tree.fullname()] = visitor.type_of_any_counter
+        self.any_types_counter[tree.fullname] = visitor.type_of_any_counter
         num_unanalyzed_lines = list(visitor.line_map.values()).count(stats.TYPE_UNANALYZED)
         # count each line of dead code as one expression of type "Any"
         num_any = visitor.num_any_exprs + num_unanalyzed_lines
         num_total = visitor.num_imprecise_exprs + visitor.num_precise_exprs + num_any
         if num_total > 0:
-            self.counts[tree.fullname()] = (num_any, num_total)
+            self.counts[tree.fullname] = (num_any, num_total)
 
     def on_finish(self) -> None:
         self._report_any_exprs()
@@ -459,12 +459,17 @@ class MemoryXmlReporter(AbstractReporter):
                 type_map: Dict[Expression, Type],
                 options: Options) -> None:
         self.last_xml = None
-        path = os.path.relpath(tree.path)
+
+        try:
+            path = os.path.relpath(tree.path)
+        except ValueError:
+            return
+
         if should_skip_path(path):
             return
 
         visitor = stats.StatisticsVisitor(inferred=True,
-                                          filename=tree.fullname(),
+                                          filename=tree.fullname,
                                           modules=modules,
                                           typemap=type_map,
                                           all_nodes=True)
@@ -586,7 +591,7 @@ class CoberturaXmlReporter(AbstractReporter):
                 options: Options) -> None:
         path = os.path.relpath(tree.path)
         visitor = stats.StatisticsVisitor(inferred=True,
-                                          filename=tree.fullname(),
+                                          filename=tree.fullname,
                                           modules=modules,
                                           typemap=type_map,
                                           all_nodes=True)
@@ -813,12 +818,17 @@ class LinePrecisionReporter(AbstractReporter):
                 modules: Dict[str, MypyFile],
                 type_map: Dict[Expression, Type],
                 options: Options) -> None:
-        path = os.path.relpath(tree.path)
+
+        try:
+            path = os.path.relpath(tree.path)
+        except ValueError:
+            return
+
         if should_skip_path(path):
             return
 
         visitor = stats.StatisticsVisitor(inferred=True,
-                                          filename=tree.fullname(),
+                                          filename=tree.fullname,
                                           modules=modules,
                                           typemap=type_map,
                                           all_nodes=True)
@@ -840,8 +850,7 @@ class LinePrecisionReporter(AbstractReporter):
         width = max(4, max(len(info.module) for info in output_files))
         titles = ('Lines', 'Precise', 'Imprecise', 'Any', 'Empty', 'Unanalyzed')
         widths = (width,) + tuple(len(t) for t in titles)
-        # TODO: Need mypyc mypy pin move
-        fmt = '{:%d}  {:%d}  {:%d}  {:%d}  {:%d}  {:%d}  {:%d}\n' % widths  # type: ignore
+        fmt = '{:%d}  {:%d}  {:%d}  {:%d}  {:%d}  {:%d}  {:%d}\n' % widths
         with open(report_file, 'w') as f:
             f.write(
                 fmt.format('Name', *titles))

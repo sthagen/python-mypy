@@ -6,11 +6,13 @@ from typing import List, Optional
 import mypy.plugin
 from mypy import nodes
 from mypy.maptype import map_instance_to_supertype
+from mypy.messages import format_type
 from mypy.subtypes import is_subtype
 from mypy.types import (
     AnyType, CallableType, Instance, NoneType, Type, TypeOfAny, UnionType,
     union_items, ProperType, get_proper_type
 )
+from mypy.typeops import make_simplified_union
 
 
 def _get_bytes_type(api: 'mypy.plugin.CheckerPluginInterface') -> Instance:
@@ -76,7 +78,7 @@ def _autoconvertible_to_cdata(tp: Type, api: 'mypy.plugin.CheckerPluginInterface
                     allowed_types.append(api.named_generic_type('builtins.int', []))
                     allowed_types.append(NoneType())
 
-    return UnionType.make_simplified_union(allowed_types)
+    return make_simplified_union(allowed_types)
 
 
 def _autounboxed_cdata(tp: Type) -> ProperType:
@@ -89,10 +91,10 @@ def _autounboxed_cdata(tp: Type) -> ProperType:
     tp = get_proper_type(tp)
 
     if isinstance(tp, UnionType):
-        return UnionType.make_simplified_union([_autounboxed_cdata(t) for t in tp.items])
+        return make_simplified_union([_autounboxed_cdata(t) for t in tp.items])
     elif isinstance(tp, Instance):
         for base in tp.type.bases:
-            if base.type.fullname() == 'ctypes._SimpleCData':
+            if base.type.fullname == 'ctypes._SimpleCData':
                 # If tp has _SimpleCData as a direct base class,
                 # the auto-unboxed type is the single type argument of the _SimpleCData type.
                 assert len(base.args) == 1
@@ -106,7 +108,7 @@ def _get_array_element_type(tp: Type) -> Optional[ProperType]:
     """Get the element type of the Array type tp, or None if not specified."""
     tp = get_proper_type(tp)
     if isinstance(tp, Instance):
-        assert tp.type.fullname() == 'ctypes.Array'
+        assert tp.type.fullname == 'ctypes.Array'
         if len(tp.args) == 1:
             return get_proper_type(tp.args[0])
     return None
@@ -124,18 +126,17 @@ def array_constructor_callback(ctx: 'mypy.plugin.FunctionContext') -> Type:
         for arg_num, (arg_kind, arg_type) in enumerate(zip(ctx.arg_kinds[0], ctx.arg_types[0]), 1):
             if arg_kind == nodes.ARG_POS and not is_subtype(arg_type, allowed):
                 ctx.api.msg.fail(
-                    'Array constructor argument {} of type "{}"'
-                    ' is not convertible to the array element type "{}"'
-                    .format(arg_num, arg_type, et),
-                    ctx.context)
+                    'Array constructor argument {} of type {}'
+                    ' is not convertible to the array element type {}'
+                    .format(arg_num, format_type(arg_type), format_type(et)), ctx.context)
             elif arg_kind == nodes.ARG_STAR:
                 ty = ctx.api.named_generic_type("typing.Iterable", [allowed])
                 if not is_subtype(arg_type, ty):
+                    it = ctx.api.named_generic_type("typing.Iterable", [et])
                     ctx.api.msg.fail(
-                        'Array constructor argument {} of type "{}"'
-                        ' is not convertible to the array element type "Iterable[{}]"'
-                        .format(arg_num, arg_type, et),
-                        ctx.context)
+                        'Array constructor argument {} of type {}'
+                        ' is not convertible to the array element type {}'
+                        .format(arg_num, format_type(arg_type), format_type(it)), ctx.context)
 
     return ctx.default_return_type
 
@@ -197,17 +198,16 @@ def array_value_callback(ctx: 'mypy.plugin.AttributeContext') -> Type:
         for tp in union_items(et):
             if isinstance(tp, AnyType):
                 types.append(AnyType(TypeOfAny.from_another_any, source_any=tp))
-            elif isinstance(tp, Instance) and tp.type.fullname() == 'ctypes.c_char':
+            elif isinstance(tp, Instance) and tp.type.fullname == 'ctypes.c_char':
                 types.append(_get_bytes_type(ctx.api))
-            elif isinstance(tp, Instance) and tp.type.fullname() == 'ctypes.c_wchar':
+            elif isinstance(tp, Instance) and tp.type.fullname == 'ctypes.c_wchar':
                 types.append(_get_text_type(ctx.api))
             else:
                 ctx.api.msg.fail(
-                    'ctypes.Array attribute "value" is only available'
-                    ' with element type c_char or c_wchar, not "{}"'
-                    .format(et),
-                    ctx.context)
-        return UnionType.make_simplified_union(types)
+                    'Array attribute "value" is only available'
+                    ' with element type "c_char" or "c_wchar", not {}'
+                    .format(format_type(et)), ctx.context)
+        return make_simplified_union(types)
     return ctx.default_attr_type
 
 
@@ -218,13 +218,12 @@ def array_raw_callback(ctx: 'mypy.plugin.AttributeContext') -> Type:
         types = []  # type: List[Type]
         for tp in union_items(et):
             if (isinstance(tp, AnyType)
-                    or isinstance(tp, Instance) and tp.type.fullname() == 'ctypes.c_char'):
+                    or isinstance(tp, Instance) and tp.type.fullname == 'ctypes.c_char'):
                 types.append(_get_bytes_type(ctx.api))
             else:
                 ctx.api.msg.fail(
-                    'ctypes.Array attribute "raw" is only available'
-                    ' with element type c_char, not "{}"'
-                    .format(et),
-                    ctx.context)
-        return UnionType.make_simplified_union(types)
+                    'Array attribute "raw" is only available'
+                    ' with element type "c_char", not {}'
+                    .format(format_type(et)), ctx.context)
+        return make_simplified_union(types)
     return ctx.default_attr_type

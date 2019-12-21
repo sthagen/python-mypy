@@ -378,7 +378,7 @@ class A(metaclass=ABCMeta):
     def f(self) -> None: pass
     @abstractproperty
     def x(self) -> int: return 0
-[typing fixtures/typing-full.pyi]
+[typing fixtures/typing-medium.pyi]
 [out2]
 tmp/a.py:2: error: Cannot instantiate abstract class 'A' with abstract attributes 'f' and 'x'
 tmp/a.py:9: error: Property "x" defined in "A" is read-only
@@ -1336,3 +1336,61 @@ import b
 def foo() -> None:
     class Foo:
         class Bar: pass
+
+[case testSerializeGenericClassMethod]
+import a
+[file a.py]
+import b
+from typing import TypeVar
+
+T = TypeVar('T')
+
+class C:
+    @classmethod
+    def f(cls, x: T) -> T: ...
+
+x = C.f
+[file b.py]
+x = 1
+[file b.py.2]
+x = 'yes'
+[builtins fixtures/classmethod.pyi]
+
+[case testSerializeGenericAbstractMethod]
+import a
+[file a.py]
+import b
+from typing import TypeVar
+from abc import abstractmethod
+
+T = TypeVar('T')
+
+class C:
+    @abstractmethod
+    def f(self, x: T) -> T: ...
+
+c: C
+x = c.f
+[file b.py]
+x = 1
+[file b.py.2]
+x = 'yes'
+
+[case testSerializeGenericNormalMethod]
+import a
+[file a.py]
+import b
+from typing import TypeVar
+from abc import abstractmethod
+
+T = TypeVar('T')
+
+class C:
+    def f(self, x: T) -> T: ...
+
+c: C
+x = c.f
+[file b.py]
+x = 1
+[file b.py.2]
+x = 'yes'

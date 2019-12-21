@@ -302,10 +302,11 @@ reveal_type(u('', 1, 1))  # N: Revealed type is 'Union[builtins.int*, builtins.s
 from typing import Union
 class A: pass
 def f(x: Union[int, str, A]):
-    x + object() # E: Unsupported operand types for + ("int" and "object") \
+    x + object() # E: Unsupported left operand type for + ("A") \
+                 # E: Unsupported operand types for + ("int" and "object") \
                  # E: Unsupported operand types for + ("str" and "object") \
-                 # E: Unsupported left operand type for + ("A") \
                  # N: Left operand is of type "Union[int, str, A]"
+[builtins fixtures/primitives.pyi]
 
 [case testNarrowingDownNamedTupleUnion]
 from typing import NamedTuple, Union
@@ -1004,3 +1005,27 @@ do_thing_with_enums(boop)  # E: Argument 1 to "do_thing_with_enums" has incompat
                            # N: "List" is invariant -- see http://mypy.readthedocs.io/en/latest/common_issues.html#variance \
                            # N: Consider using "Sequence" instead, which is covariant
 [builtins fixtures/isinstancelist.pyi]
+
+[case testAssignUnionWithTenaryExprWithEmptyCollection]
+from typing import Dict, List, Union
+x: Union[int, List[int]] = 1 if bool() else []
+y: Union[int, Dict[int, int]] = 1 if bool() else {}
+
+u: Union[int, List[int]] = [] if bool() else 1
+v: Union[int, Dict[int, int]] = {} if bool() else 1
+[builtins fixtures/isinstancelist.pyi]
+
+[case testFlattenTypeAliasWhenAliasedAsUnion]
+from typing import Union
+
+T1 = int
+T2 = Union[T1, float]
+T3 = Union[T2, complex]
+T4 = Union[T3, int]
+
+def foo(a: T2, b: T2) -> T2:
+    return a + b
+
+def bar(a: T4, b: T4) -> T4:  # test multi-level alias
+    return a + b
+[builtins fixtures/ops.pyi]

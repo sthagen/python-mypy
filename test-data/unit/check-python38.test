@@ -30,15 +30,19 @@ def f(): ...  # type: ignore
 [case testIgnoreScopeIssue1032]
 def f(a: int): ...
 f(
-    "IGNORE"
+    1,
+    2,
 )  # type: ignore
 
 [case testIgnoreScopeNested1]
+def g(x: str) -> str: ...
 def f(a: int) -> int: ...
 f(
     f(
-        "IGNORE"
-    )  # type: ignore
+        g(
+            "IGNORE"
+        )  # type: ignore
+    )
 )
 
 [case testIgnoreScopeNested2]
@@ -86,10 +90,11 @@ def g(x: int): ...
 [case testIgnoreScopeUnused1]
 # flags: --warn-unused-ignores
 (  # type: ignore  # E: unused 'type: ignore' comment
-    "IGNORE"  # type: ignore
+    "IGNORE"  # type: ignore  # E: unused 'type: ignore' comment
     +  # type: ignore  # E: unused 'type: ignore' comment
-    0  # type: ignore  # E: unused 'type: ignore' comment
+    0  # type: ignore
 )  # type: ignore  # E: unused 'type: ignore' comment
+[builtins fixtures/primitives.pyi]
 
 [case testIgnoreScopeUnused2]
 # flags: --warn-unused-ignores
@@ -222,7 +227,7 @@ def f(x: int = (c := 4)) -> int:
     f(x=(y7 := 3))
     reveal_type(y7)  # N: Revealed type is 'builtins.int'
 
-    reveal_type((lambda: (y8 := 3) and y8)())  # N: Revealed type is 'builtins.int'
+    reveal_type((lambda: (y8 := 3) and y8)())  # N: Revealed type is 'Literal[3]?'
     y8  # E: Name 'y8' is not defined
 
     y7 = 1.0  # E: Incompatible types in assignment (expression has type "float", variable has type "int")
@@ -231,12 +236,16 @@ def f(x: int = (c := 4)) -> int:
 
     # Just make sure we don't crash on this sort of thing.
     if NT := NamedTuple("NT", [("x", int)]):  # E: "int" not callable
-        z2: NT  # E: Invalid type "NT"
+        z2: NT  # E: Variable "NT" is not valid as a type
 
     if Alias := int:
-        z3: Alias  # E: Invalid type "Alias"
+        z3: Alias  # E: Variable "Alias" is not valid as a type
 
-    return (y9 := 3) + y9
+    if (reveal_type(y9 := 3) and   # N: Revealed type is 'Literal[3]?'
+            reveal_type(y9)):       # N: Revealed type is 'builtins.int'
+        reveal_type(y9)            # N: Revealed type is 'builtins.int'
+
+    return (y10 := 3) + y10
 
 reveal_type(c)  # N: Revealed type is 'builtins.int'
 

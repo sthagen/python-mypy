@@ -6,8 +6,8 @@ from typing import List, Optional
 from mypy.types import (
     Type, AnyType, NoneType, TypeVisitor, Instance, UnboundType, TypeVarType, CallableType,
     TupleType, TypedDictType, ErasedType, UnionType, FunctionLike, Overloaded, LiteralType,
-    PartialType, DeletedType, UninhabitedType, TypeType, true_or_false, TypeOfAny, get_proper_type,
-    ProperType, get_proper_types
+    PartialType, DeletedType, UninhabitedType, TypeType, TypeOfAny, get_proper_type,
+    ProperType, get_proper_types, TypeAliasType
 )
 from mypy.maptype import map_instance_to_supertype
 from mypy.subtypes import (
@@ -21,14 +21,15 @@ from mypy import state
 
 def join_simple(declaration: Optional[Type], s: Type, t: Type) -> ProperType:
     """Return a simple least upper bound given the declared type."""
+    # TODO: check infinite recursion for aliases here.
     declaration = get_proper_type(declaration)
     s = get_proper_type(s)
     t = get_proper_type(t)
 
     if (s.can_be_true, s.can_be_false) != (t.can_be_true, t.can_be_false):
         # if types are restricted in different ways, use the more general versions
-        s = true_or_false(s)
-        t = true_or_false(t)
+        s = mypy.typeops.true_or_false(s)
+        t = mypy.typeops.true_or_false(t)
 
     if isinstance(s, AnyType):
         return s
@@ -43,7 +44,7 @@ def join_simple(declaration: Optional[Type], s: Type, t: Type) -> ProperType:
         return s
 
     if isinstance(declaration, UnionType):
-        return UnionType.make_simplified_union([s, t])
+        return mypy.typeops.make_simplified_union([s, t])
 
     if isinstance(s, NoneType) and not isinstance(t, NoneType):
         s, t = t, s
@@ -58,18 +59,32 @@ def join_simple(declaration: Optional[Type], s: Type, t: Type) -> ProperType:
     return declaration
 
 
+def trivial_join(s: Type, t: Type) -> ProperType:
+    """Return one of types (expanded) if it is a supertype of other, otherwise top type."""
+    if is_subtype(s, t):
+        return get_proper_type(t)
+    elif is_subtype(t, s):
+        return get_proper_type(s)
+    else:
+        return object_or_any_from_type(get_proper_type(t))
+
+
 def join_types(s: Type, t: Type) -> ProperType:
     """Return the least upper bound of s and t.
 
     For example, the join of 'int' and 'object' is 'object'.
     """
+    if mypy.typeops.is_recursive_pair(s, t):
+        # This case can trigger an infinite recursion, general support for this will be
+        # tricky so we use a trivial join (like for protocols).
+        return trivial_join(s, t)
     s = get_proper_type(s)
     t = get_proper_type(t)
 
     if (s.can_be_true, s.can_be_false) != (t.can_be_true, t.can_be_false):
         # if types are restricted in different ways, use the more general versions
-        s = true_or_false(s)
-        t = true_or_false(t)
+        s = mypy.typeops.true_or_false(s)
+        t = mypy.typeops.true_or_false(t)
 
     if isinstance(s, AnyType):
         return s
@@ -107,7 +122,7 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
         if is_subtype(self.s, t):
             return t
         else:
-            return UnionType.make_simplified_union([self.s, t])
+            return mypy.typeops.make_simplified_union([self.s, t])
 
     def visit_any(self, t: AnyType) -> ProperType:
         return t
@@ -119,7 +134,7 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
             elif isinstance(self.s, UnboundType):
                 return AnyType(TypeOfAny.special_form)
             else:
-                return UnionType.make_simplified_union([self.s, t])
+                return mypy.typeops.make_simplified_union([self.s, t])
         else:
             return self.s
 
@@ -172,6 +187,11 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
             if is_equivalent(t, self.s):
                 return combine_similar_callables(t, self.s)
             result = join_similar_callables(t, self.s)
+            # We set the from_type_type flag to suppress error when a collection of
+            # concrete class objects gets inferred as their common abstract superclass.
+            if not ((t.is_type_obj() and t.type_object().is_abstract) or
+                    (self.s.is_type_obj() and self.s.type_object().is_abstract)):
+                result.from_type_type = True
             if any(isinstance(tp, (NoneType, UninhabitedType))
                    for tp in get_proper_types(result.arg_types)):
                 # We don't want to return unusable Callable, attempt fallback instead.
@@ -287,10 +307,13 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
     def visit_type_type(self, t: TypeType) -> ProperType:
         if isinstance(self.s, TypeType):
             return TypeType.make_normalized(self.join(t.item, self.s.item), line=t.line)
-        elif isinstance(self.s, Instance) and self.s.type.fullname() == 'builtins.type':
+        elif isinstance(self.s, Instance) and self.s.type.fullname == 'builtins.type':
             return self.s
         else:
             return self.default(self.s)
+
+    def visit_type_alias_type(self, t: TypeAliasType) -> ProperType:
+        assert False, "This should be never called, got {}".format(t)
 
     def join(self, s: Type, t: Type) -> ProperType:
         return join_types(s, t)
@@ -322,8 +345,10 @@ def join_instances(t: Instance, s: Instance) -> ProperType:
         if is_subtype(t, s) or is_subtype(s, t):
             # Compatible; combine type arguments.
             args = []  # type: List[Type]
-            for i in range(len(t.args)):
-                args.append(join_types(t.args[i], s.args[i]))
+            # N.B: We use zip instead of indexing because the lengths might have
+            # mismatches during daemon reprocessing.
+            for ta, sa in zip(t.args, s.args):
+                args.append(join_types(ta, sa))
             return Instance(t.type, args)
         else:
             # Incompatible; return trivial result object.
@@ -388,7 +413,7 @@ def join_similar_callables(t: CallableType, s: CallableType) -> CallableType:
     # TODO in combine_similar_callables also applies here (names and kinds)
     # The fallback type can be either 'function' or 'type'. The result should have 'type' as
     # fallback only if both operands have it as 'type'.
-    if t.fallback.type.fullname() != 'builtins.type':
+    if t.fallback.type.fullname != 'builtins.type':
         fallback = t.fallback
     else:
         fallback = s.fallback
@@ -406,7 +431,7 @@ def combine_similar_callables(t: CallableType, s: CallableType) -> CallableType:
     # TODO kinds and argument names
     # The fallback type can be either 'function' or 'type'. The result should have 'type' as
     # fallback only if both operands have it as 'type'.
-    if t.fallback.type.fullname() != 'builtins.type':
+    if t.fallback.type.fullname != 'builtins.type':
         fallback = t.fallback
     else:
         fallback = s.fallback
@@ -454,12 +479,31 @@ def object_from_instance(instance: Instance) -> Instance:
     return res
 
 
-def join_type_list(types: List[Type]) -> Type:
+def object_or_any_from_type(typ: ProperType) -> ProperType:
+    # Similar to object_from_instance() but tries hard for all types.
+    # TODO: find a better way to get object, or make this more reliable.
+    if isinstance(typ, Instance):
+        return object_from_instance(typ)
+    elif isinstance(typ, (CallableType, TypedDictType, LiteralType)):
+        return object_from_instance(typ.fallback)
+    elif isinstance(typ, TupleType):
+        return object_from_instance(typ.partial_fallback)
+    elif isinstance(typ, TypeType):
+        return object_or_any_from_type(typ.item)
+    elif isinstance(typ, TypeVarType) and isinstance(typ.upper_bound, ProperType):
+        return object_or_any_from_type(typ.upper_bound)
+    elif isinstance(typ, UnionType):
+        joined = join_type_list([it for it in typ.items if isinstance(it, ProperType)])
+        return object_or_any_from_type(joined)
+    return AnyType(TypeOfAny.implementation_artifact)
+
+
+def join_type_list(types: List[Type]) -> ProperType:
     if not types:
         # This is a little arbitrary but reasonable. Any empty tuple should be compatible
         # with all variable length tuples, and this makes it possible.
         return UninhabitedType()
-    joined = types[0]
+    joined = get_proper_type(types[0])
     for t in types[1:]:
         joined = join_types(joined, t)
     return joined
@@ -468,5 +512,5 @@ def join_type_list(types: List[Type]) -> Type:
 def unpack_callback_protocol(t: Instance) -> Optional[Type]:
     assert t.type.is_protocol
     if t.type.protocol_members == ['__call__']:
-        return find_member('__call__', t, t)
+        return find_member('__call__', t, t, is_operator=True)
     return None

@@ -30,6 +30,7 @@ TYPE_PROMOTIONS = {
 TYPE_PROMOTIONS_PYTHON3 = TYPE_PROMOTIONS.copy()  # type: Final
 TYPE_PROMOTIONS_PYTHON3.update({
     'builtins.bytearray': 'bytes',
+    'builtins.memoryview': 'bytes',
 })
 
 # Hard coded type promotions for Python 2.
@@ -41,6 +42,7 @@ TYPE_PROMOTIONS_PYTHON2 = TYPE_PROMOTIONS.copy()  # type: Final
 TYPE_PROMOTIONS_PYTHON2.update({
     'builtins.str': 'unicode',
     'builtins.bytearray': 'str',
+    'builtins.memoryview': 'str',
 })
 
 
@@ -95,7 +97,7 @@ def calculate_class_abstract_status(typ: TypeInfo, is_stub_file: bool, errors: E
     # implement some methods.
     typ.abstract_attributes = sorted(abstract)
     if is_stub_file:
-        if typ.declared_metaclass and typ.declared_metaclass.type.fullname() == 'abc.ABCMeta':
+        if typ.declared_metaclass and typ.declared_metaclass.type.fullname == 'abc.ABCMeta':
             return
         if typ.is_protocol:
             return
@@ -104,7 +106,7 @@ def calculate_class_abstract_status(typ: TypeInfo, is_stub_file: bool, errors: E
                 errors.report(typ.line, typ.column, message, severity=severity)
 
             attrs = ", ".join('"{}"'.format(attr) for attr in sorted(abstract))
-            report("Class {} has abstract attributes {}".format(typ.fullname(), attrs), 'error')
+            report("Class {} has abstract attributes {}".format(typ.fullname, attrs), 'error')
             report("If it is meant to be abstract, add 'abc.ABCMeta' as an explicit metaclass",
                    'note')
 
@@ -113,7 +115,7 @@ def check_protocol_status(info: TypeInfo, errors: Errors) -> None:
     """Check that all classes in MRO of a protocol are protocols"""
     if info.is_protocol:
         for type in info.bases:
-            if not type.type.is_protocol and type.type.fullname() != 'builtins.object':
+            if not type.type.is_protocol and type.type.fullname != 'builtins.object':
                 def report(message: str, severity: str) -> None:
                     errors.report(info.line, info.column, message, severity=severity)
                 report('All bases of a protocol must be protocols', 'error')

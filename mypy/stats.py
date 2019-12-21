@@ -85,7 +85,7 @@ class StatisticsVisitor(TraverserVisitor):
 
     def visit_mypy_file(self, o: MypyFile) -> None:
         self.cur_mod_node = o
-        self.cur_mod_id = o.fullname()
+        self.cur_mod_id = o.fullname
         super().visit_mypy_file(o)
 
     def visit_import_from(self, imp: ImportFrom) -> None:
@@ -332,7 +332,8 @@ class StatisticsVisitor(TraverserVisitor):
             return
 
         if isinstance(t, AnyType) and is_special_form_any(t):
-            # This is not a real Any type, so don't collect stats for it.
+            # TODO: What if there is an error in special form definition?
+            self.record_line(self.line, TYPE_PRECISE)
             return
 
         if isinstance(t, AnyType):
@@ -394,7 +395,7 @@ def dump_type_stats(tree: MypyFile,
         return
     print(path)
     visitor = StatisticsVisitor(inferred,
-                                filename=tree.fullname(),
+                                filename=tree.fullname,
                                 modules=modules,
                                 typemap=typemap)
     tree.accept(visitor)

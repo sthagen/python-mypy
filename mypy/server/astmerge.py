@@ -56,10 +56,10 @@ from mypy.nodes import (
 )
 from mypy.traverser import TraverserVisitor
 from mypy.types import (
-    Type, SyntheticTypeVisitor, Instance, AnyType, NoneType, CallableType, DeletedType,
+    Type, SyntheticTypeVisitor, Instance, AnyType, NoneType, CallableType, ErasedType, DeletedType,
     TupleType, TypeType, TypeVarType, TypedDictType, UnboundType, UninhabitedType, UnionType,
     Overloaded, TypeVarDef, TypeList, CallableArgument, EllipsisType, StarType, LiteralType,
-    RawExpressionType, PartialType,
+    RawExpressionType, PartialType, PlaceholderType, TypeAliasType
 )
 from mypy.util import get_prefix, replace_object_state
 from mypy.typestate import TypeState
@@ -77,11 +77,11 @@ def merge_asts(old: MypyFile, old_symbols: SymbolTable,
     will be the new symbol table. 'new' and 'old_symbols' will no longer be
     valid.
     """
-    assert new.fullname() == old.fullname()
+    assert new.fullname == old.fullname
     # Find the mapping from new to old node identities for all nodes
     # whose identities should be preserved.
     replacement_map = replacement_map_from_symbol_table(
-        old_symbols, new_symbols, prefix=old.fullname())
+        old_symbols, new_symbols, prefix=old.fullname)
     # Also replace references to the new MypyFile node.
     replacement_map[new] = old
     # Perform replacements to everywhere within the new AST (not including symbol
@@ -106,11 +106,11 @@ def replacement_map_from_symbol_table(
     replacements = {}  # type: Dict[SymbolNode, SymbolNode]
     for name, node in old.items():
         if (name in new and (node.kind == MDEF
-                             or node.node and get_prefix(node.node.fullname()) == prefix)):
+                             or node.node and get_prefix(node.node.fullname) == prefix)):
             new_node = new[name]
             if (type(new_node.node) == type(node.node)  # noqa
                     and new_node.node and node.node and
-                    new_node.node.fullname() == node.node.fullname() and
+                    new_node.node.fullname == node.node.fullname and
                     new_node.kind == node.kind):
                 replacements[new_node.node] = node.node
                 if isinstance(node.node, TypeInfo) and isinstance(new_node.node, TypeInfo):
@@ -301,8 +301,6 @@ class NodeReplaceVisitor(TraverserVisitor):
         self.fixup_type(info.tuple_type)
         self.fixup_type(info.typeddict_type)
         info.defn.info = self.fixup(info)
-        if info.replaced:
-            info.replaced = self.fixup(info.replaced)
         replace_nodes_in_symbol_table(info.names, self.replacements)
         for i, item in enumerate(info.mro):
             info.mro[i] = self.fixup(info.mro[i])
@@ -345,6 +343,12 @@ class TypeReplaceVisitor(SyntheticTypeVisitor[None]):
         if typ.last_known_value:
             typ.last_known_value.accept(self)
 
+    def visit_type_alias_type(self, typ: TypeAliasType) -> None:
+        assert typ.alias is not None
+        typ.alias = self.fixup(typ.alias)
+        for arg in typ.args:
+            arg.accept(self)
+
     def visit_any(self, typ: AnyType) -> None:
         pass
 
@@ -372,6 +376,10 @@ class TypeReplaceVisitor(SyntheticTypeVisitor[None]):
         # Fallback can be None for overloaded types that haven't been semantically analyzed.
         if t.fallback is not None:
             t.fallback.accept(self)
+
+    def visit_erased_type(self, t: ErasedType) -> None:
+        # This type should exist only temporarily during type inference
+        raise RuntimeError
 
     def visit_deleted_type(self, typ: DeletedType) -> None:
         pass
@@ -427,6 +435,10 @@ class TypeReplaceVisitor(SyntheticTypeVisitor[None]):
 
     def visit_union_type(self, typ: UnionType) -> None:
         for item in typ.items:
+            item.accept(self)
+
+    def visit_placeholder_type(self, t: PlaceholderType) -> None:
+        for item in t.args:
             item.accept(self)
 
     # Helpers

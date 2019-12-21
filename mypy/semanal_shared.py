@@ -51,7 +51,7 @@ class SemanticAnalyzerCoreInterface:
         raise NotImplementedError
 
     @abstractmethod
-    def note(self, msg: str, ctx: Context) -> None:
+    def note(self, msg: str, ctx: Context, *, code: Optional[ErrorCode] = None) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -170,7 +170,7 @@ def create_indirect_imported_name(file_node: MypyFile,
     These entries act as indirect references.
     """
     target_module, ok = correct_relative_import(
-        file_node.fullname(),
+        file_node.fullname,
         relative,
         module,
         file_node.is_package_init_file())
@@ -186,17 +186,17 @@ def set_callable_name(sig: Type, fdef: FuncDef) -> ProperType:
     sig = get_proper_type(sig)
     if isinstance(sig, FunctionLike):
         if fdef.info:
-            if fdef.info.fullname() in TPDICT_FB_NAMES:
+            if fdef.info.fullname in TPDICT_FB_NAMES:
                 # Avoid exposing the internal _TypedDict name.
                 class_name = 'TypedDict'
             else:
-                class_name = fdef.info.name()
+                class_name = fdef.info.name
             return sig.with_name(
-                '{} of {}'.format(fdef.name(), class_name))
+                '{} of {}'.format(fdef.name, class_name))
         else:
-            return sig.with_name(fdef.name())
+            return sig.with_name(fdef.name)
     else:
-        return get_proper_type(sig)
+        return sig
 
 
 def calculate_tuple_fallback(typ: TupleType) -> None:
@@ -214,5 +214,5 @@ def calculate_tuple_fallback(typ: TupleType) -> None:
     we don't prevent their existence).
     """
     fallback = typ.partial_fallback
-    assert fallback.type.fullname() == 'builtins.tuple'
+    assert fallback.type.fullname == 'builtins.tuple'
     fallback.args[0] = join.join_type_list(list(typ.items))

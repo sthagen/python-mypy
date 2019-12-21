@@ -1,9 +1,9 @@
-"""Top-level logic for the new semantic analyzer.
+"""Top-level logic for the semantic analyzer.
 
 The semantic analyzer binds names, resolves imports, detects various
 special constructs that don't have dedicated AST nodes after parse
-(such as 'cast' which looks like a call), and performs various simple
-consistency checks.
+(such as 'cast' which looks like a call), populates symbol tables, and
+performs various simple consistency checks.
 
 Semantic analysis of each SCC (strongly connected component; import
 cycle) is performed in one unit. Each module is analyzed as multiple
@@ -126,7 +126,7 @@ def semantic_analysis_for_targets(
             # Already done above.
             continue
         process_top_level_function(analyzer, state, state.id,
-                                   n.node.fullname(), n.node, n.active_typeinfo, patches)
+                                   n.node.fullname, n.node, n.active_typeinfo, patches)
     apply_semantic_analyzer_patches(patches)
 
     check_type_arguments_in_targets(nodes, state, state.manager.errors)

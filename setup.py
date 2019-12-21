@@ -36,7 +36,7 @@ types.
 '''.lstrip()
 
 
-def find_package_data(base, globs):
+def find_package_data(base, globs, root='mypy'):
     """Find all interesting data files, for setup(package_data=)
 
     Arguments:
@@ -52,7 +52,7 @@ def find_package_data(base, globs):
             files += glob.glob(os.path.join(rv_dir, pat))
         if not files:
             continue
-        rv.extend([f[5:] for f in files])
+        rv.extend([os.path.relpath(f, root) for f in files])
     return rv
 
 
@@ -85,14 +85,11 @@ if os.getenv('MYPY_USE_MYPYC', None) == '1':
     USE_MYPYC = True
 
 if USE_MYPYC:
-    MYPYC_BLACKLIST = (
+    MYPYC_BLACKLIST = tuple(os.path.join('mypy', x) for x in (
         # Need to be runnable as scripts
         '__main__.py',
         'sitepkgs.py',
         os.path.join('dmypy', '__main__.py'),
-
-        # Needs to be interpreted to provide a hook to interpreted plugins
-        'interpreted_plugin.py',
 
         # Uses __getattr__/__setattr__
         'split_namespace.py',
@@ -103,45 +100,53 @@ if USE_MYPYC:
         # We don't populate __file__ properly at the top level or something?
         # Also I think there would be problems with how we generate version.py.
         'version.py',
+    )) + (
+        # Don't want to grab this accidentally
+        os.path.join('mypyc', 'lib-rt', 'setup.py'),
     )
 
-    everything = find_package_data('mypy', ['*.py'])
+    everything = (
+        [os.path.join('mypy', x) for x in find_package_data('mypy', ['*.py'])] +
+        [os.path.join('mypyc', x) for x in find_package_data('mypyc', ['*.py'], root='mypyc')])
     # Start with all the .py files
-    all_real_pys = [x for x in everything if not x.startswith('typeshed' + os.sep)]
+    all_real_pys = [x for x in everything
+                    if not x.startswith(os.path.join('mypy', 'typeshed') + os.sep)]
     # Strip out anything in our blacklist
     mypyc_targets = [x for x in all_real_pys if x not in MYPYC_BLACKLIST]
     # Strip out any test code
-    mypyc_targets = [x for x in mypyc_targets if not x.startswith('test' + os.sep)]
+    mypyc_targets = [x for x in mypyc_targets
+                     if not x.startswith((os.path.join('mypy', 'test') + os.sep,
+                                          os.path.join('mypyc', 'test') + os.sep,
+                                          os.path.join('mypyc', 'test-data') + os.sep,
+                                          ))]
     # ... and add back in the one test module we need
-    mypyc_targets.append(os.path.join('test', 'visitors.py'))
+    mypyc_targets.append(os.path.join('mypy', 'test', 'visitors.py'))
 
-    # Fix the paths to be full
-    mypyc_targets = [os.path.join('mypy', x) for x in mypyc_targets]
     # The targets come out of file system apis in an unspecified
     # order. Sort them so that the mypyc output is deterministic.
     mypyc_targets.sort()
 
-    # This bit is super unfortunate: we want to use the mypy packaged
-    # with mypyc. It will arrange for the path to be setup so it can
-    # find it, but we've already imported parts, so we remove the
-    # modules that we've imported already, which will let the right
-    # versions be imported by mypyc.
-    del sys.modules['mypy']
-    del sys.modules['mypy.version']
-    del sys.modules['mypy.git']
+    use_other_mypyc = os.getenv('ALTERNATE_MYPYC_PATH', None)
+    if use_other_mypyc:
+        # This bit is super unfortunate: we want to use a different
+        # mypy/mypyc version, but we've already imported parts, so we
+        # remove the modules that we've imported already, which will
+        # let the right versions be imported by mypyc.
+        del sys.modules['mypy']
+        del sys.modules['mypy.version']
+        del sys.modules['mypy.git']
+        sys.path.insert(0, use_other_mypyc)
 
-    from mypyc.build import mypycify, MypycifyBuildExt
+    from mypyc.build import mypycify
     opt_level = os.getenv('MYPYC_OPT_LEVEL', '3')
     force_multifile = os.getenv('MYPYC_MULTI_FILE', '') == '1'
     ext_modules = mypycify(
-        mypyc_targets,
-        ['--config-file=mypy_bootstrap.ini'],
+        mypyc_targets + ['--config-file=mypy_bootstrap.ini'],
         opt_level=opt_level,
         # Use multi-file compliation mode on windows because without it
         # our Appveyor builds run out of memory sometimes.
         multi_file=sys.platform == 'win32' or force_multifile,
     )
-    cmdclass['build_ext'] = MypycifyBuildExt
 else:
     ext_modules = []
 
@@ -155,6 +160,7 @@ classifiers = [
     'Programming Language :: Python :: 3.5',
     'Programming Language :: Python :: 3.6',
     'Programming Language :: Python :: 3.7',
+    'Programming Language :: Python :: 3.8',
     'Topic :: Software Development',
 ]
 
@@ -170,18 +176,20 @@ setup(name='mypy',
       ext_modules=ext_modules,
       packages=[
           'mypy', 'mypy.test', 'mypy.server', 'mypy.plugins', 'mypy.dmypy',
+          'mypyc', 'mypyc.test',
       ],
       package_data={'mypy': package_data},
+      scripts=['scripts/mypyc'],
       entry_points={'console_scripts': ['mypy=mypy.__main__:console_entry',
                                         'stubgen=mypy.stubgen:main',
                                         'dmypy=mypy.dmypy.client:console_entry',
                                         ]},
       classifiers=classifiers,
       cmdclass=cmdclass,
-      # When changing this, also update test-requirements.txt.
+      # When changing this, also update mypy-requirements.txt.
       install_requires=['typed_ast >= 1.4.0, < 1.5.0',
                         'typing_extensions>=3.7.4',
-                        'mypy_extensions >= 0.4.0, < 0.5.0',
+                        'mypy_extensions >= 0.4.3, < 0.5.0',
                         ],
       # Same here.
       extras_require={'dmypy': 'psutil >= 4.0'},

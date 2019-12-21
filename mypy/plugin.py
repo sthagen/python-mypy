@@ -36,10 +36,9 @@ At large scale the plugin system works as following:
   named tuples for details about which information is given to each hook.
 
 Plugin developers should ensure that their plugins work well in incremental and
-daemon modes, and with both the old and new semantic analyzers (the old semantic
-analyzer will be removed soon). In particular, plugins should not hold global
-state, and should always call add_plugin_dependency() in plugin hooks called
-during semantic analysis. See the method docstring for more details.
+daemon modes. In particular, plugins should not hold global state, and should
+always call add_plugin_dependency() in plugin hooks called during semantic
+analysis. See the method docstring for more details.
 
 There is no dedicated cache storage for plugins, but plugins can store
 per-TypeInfo data in a special .metadata attribute that is serialized to the
@@ -48,13 +47,14 @@ are encouraged to store their state under a dedicated key coinciding with
 plugin name in the metadata dictionary. Every value stored there must be
 JSON-serializable.
 
-## New semantic analyzer
+## Notes about the semantic analyzer
 
-The new semantic analyzer (enabled through the --new-semantic-analyzer flag)
-changes how plugins are expected to work in several notable ways:
+Mypy 0.710 introduced a new semantic analyzer that changed how plugins are
+expected to work in several notable ways (from mypy 0.730 the old semantic
+analyzer is no longer available):
 
 1. The order of processing AST nodes in modules is different. The old semantic
-   analyzer processes modules in textual order, one module at a time. The new
+   analyzer processed modules in textual order, one module at a time. The new
    semantic analyzer first processes the module top levels, including bodies of
    any top-level classes and classes nested within classes. ("Top-level" here
    means "not nested within a function/method".) Functions and methods are
@@ -104,10 +104,9 @@ changes how plugins are expected to work in several notable ways:
    another module, such as the builtins, that is outside the current module or
    import cycle, you can safely assume that you won't receive a placeholder.
 
-When testing your plugin with the new semantic analyzer, you should have a test
-case that forces a module top level to be processed multiple times. The easiest
-way to do this is to include a forward reference to a class in a top-level
-annotation. Example:
+When testing your plugin, you should have a test case that forces a module top
+level to be processed multiple times. The easiest way to do this is to include
+a forward reference to a class in a top-level annotation. Example:
 
     c: C  # Forward reference causes second analysis pass
     class C: pass
@@ -117,14 +116,12 @@ pass, since all functions are processed only after the top level has been fully
 analyzed.
 
 You can use `api.options.new_semantic_analyzer` to check whether the new
-semantic analyzer is enabled.
+semantic analyzer is enabled (it's always true in mypy 0.730 and later).
 """
-
-import types
 
 from abc import abstractmethod, abstractproperty
 from typing import Any, Callable, List, Tuple, Optional, NamedTuple, TypeVar, Dict
-from mypy_extensions import trait
+from mypy_extensions import trait, mypyc_attr
 
 from mypy.nodes import (
     Expression, Context, ClassDef, SymbolTableNode, MypyFile, CallExpr
@@ -135,7 +132,6 @@ from mypy.messages import MessageBuilder
 from mypy.options import Options
 from mypy.lookup import lookup_fully_qualified
 from mypy.errorcodes import ErrorCode
-import mypy.interpreted_plugin
 
 
 @trait
@@ -154,7 +150,7 @@ class TypeAnalyzerPluginInterface:
 
     @abstractmethod
     def fail(self, msg: str, ctx: Context, *, code: Optional[ErrorCode] = None) -> None:
-        """Emmit an error message at given location."""
+        """Emit an error message at given location."""
         raise NotImplementedError
 
     @abstractmethod
@@ -183,7 +179,7 @@ AnalyzeTypeContext = NamedTuple(
         ('api', TypeAnalyzerPluginInterface)])
 
 
-@trait
+@mypyc_attr(allow_interpreted_subclasses=True)
 class CommonPluginApi:
     """
     A common plugin API (shared between semantic analysis and type checking phases)
@@ -216,6 +212,12 @@ class CheckerPluginInterface:
     msg = None  # type: MessageBuilder
     options = None  # type: Options
     path = None  # type: str
+
+    # Type context for type inference
+    @abstractproperty
+    def type_context(self) -> List[Optional[Type]]:
+        """Return the type context of the plugin"""
+        raise NotImplementedError
 
     @abstractmethod
     def fail(self, msg: str, ctx: Context, *, code: Optional[ErrorCode] = None) -> None:
@@ -257,7 +259,7 @@ class SemanticAnalyzerPluginInterface:
     @abstractmethod
     def fail(self, msg: str, ctx: Context, serious: bool = False, *,
              blocker: bool = False, code: Optional[ErrorCode] = None) -> None:
-        """Emmit an error message at given location."""
+        """Emit an error message at given location."""
         raise NotImplementedError
 
     @abstractmethod
@@ -269,9 +271,9 @@ class SemanticAnalyzerPluginInterface:
                   third_pass: bool = False) -> Optional[Type]:
         """Analyze an unbound type.
 
-        Return None if the some part of the type is not ready yet (only
-        happens with the new semantic analyzer). In this case the current
-        target being analyzed will be deferred and analyzed again.
+        Return None if some part of the type is not ready yet. In this
+        case the current target being analyzed will be deferred and
+        analyzed again.
         """
         raise NotImplementedError
 
@@ -343,18 +345,23 @@ class SemanticAnalyzerPluginInterface:
         """Call this to defer the processing of the current node.
 
         This will request an additional iteration of semantic analysis.
-        Only available with new semantic analyzer.
         """
         raise NotImplementedError
 
     @abstractproperty
     def final_iteration(self) -> bool:
-        """Is this the final iteration of semantic analysis?
-
-        Only available with new semantic analyzer.
-        """
+        """Is this the final iteration of semantic analysis?"""
         raise NotImplementedError
 
+
+# A context for querying for configuration data about a module for
+# cache invalidation purposes.
+ReportConfigContext = NamedTuple(
+    'DynamicClassDefContext', [
+        ('id', str),        # Module name
+        ('path', str),      # Module file path
+        ('is_check', bool)  # Is this invocation for checking whether the config matches
+    ])
 
 # A context for a function hook that infers the return type of a function with
 # a special signature.
@@ -435,6 +442,7 @@ DynamicClassDefContext = NamedTuple(
     ])
 
 
+@mypyc_attr(allow_interpreted_subclasses=True)
 class Plugin(CommonPluginApi):
     """Base class of all type checker plugins.
 
@@ -463,6 +471,29 @@ class Plugin(CommonPluginApi):
     def lookup_fully_qualified(self, fullname: str) -> Optional[SymbolTableNode]:
         assert self._modules is not None
         return lookup_fully_qualified(fullname, self._modules)
+
+    def report_config_data(self, ctx: ReportConfigContext) -> Any:
+        """Get representation of configuration data for a module.
+
+        The data must be encodable as JSON and will be stored in the
+        cache metadata for the module. A mismatch between the cached
+        values and the returned will result in that module's cache
+        being invalidated and the module being rechecked.
+
+        This can be called twice for each module, once after loading
+        the cache to check if it is valid and once while writing new
+        cache information.
+
+        If is_check in the context is true, then the return of this
+        call will be checked against the cached version. Otherwise the
+        call is being made to determine what to put in the cache. This
+        can be used to allow consulting extra cache files in certain
+        complex situations.
+
+        This can be used to incorporate external configuration information
+        that might require changes to typechecking.
+        """
+        return None
 
     def get_additional_deps(self, file: MypyFile) -> List[Tuple[int, str, int]]:
         """Customize dependencies for a module.
@@ -560,7 +591,7 @@ class Plugin(CommonPluginApi):
         """Adjust type of a class attribute.
 
         This method is called with attribute full name using the class where the attribute was
-        defined (or Var.info.fullname() for generated attributes).
+        defined (or Var.info.fullname for generated attributes).
 
         For classes without __getattr__ or __getattribute__, this hook is only called for
         names of fields/properties (but not methods) that exist in the instance MRO.
@@ -634,7 +665,7 @@ class Plugin(CommonPluginApi):
                                ) -> Optional[Callable[[DynamicClassDefContext], None]]:
         """Semantically analyze a dynamic class definition.
 
-        This plugin hook allows to semantically analyze dynamic class definitions like:
+        This plugin hook allows one to semantically analyze dynamic class definitions like:
 
             from lib import dynamic_class
 
@@ -648,71 +679,6 @@ class Plugin(CommonPluginApi):
 
 
 T = TypeVar('T')
-
-
-class WrapperPlugin(Plugin):
-    """A plugin that wraps an interpreted plugin.
-
-    This is a ugly workaround the limitation that mypyc-compiled
-    classes can't be subclassed by interpreted ones, so instead we
-    create a new class for interpreted clients to inherit from and
-    dispatch to it from here.
-
-    Eventually mypyc ought to do something like this automatically.
-    """
-
-    def __init__(self, plugin: mypy.interpreted_plugin.InterpretedPlugin) -> None:
-        super().__init__(plugin.options)
-        self.plugin = plugin
-
-    def set_modules(self, modules: Dict[str, MypyFile]) -> None:
-        self.plugin.set_modules(modules)
-
-    def lookup_fully_qualified(self, fullname: str) -> Optional[SymbolTableNode]:
-        return self.plugin.lookup_fully_qualified(fullname)
-
-    def get_additional_deps(self, file: MypyFile) -> List[Tuple[int, str, int]]:
-        return self.plugin.get_additional_deps(file)
-
-    def get_type_analyze_hook(self, fullname: str
-                              ) -> Optional[Callable[[AnalyzeTypeContext], Type]]:
-        return self.plugin.get_type_analyze_hook(fullname)
-
-    def get_function_hook(self, fullname: str
-                          ) -> Optional[Callable[[FunctionContext], Type]]:
-        return self.plugin.get_function_hook(fullname)
-
-    def get_method_signature_hook(self, fullname: str
-                                  ) -> Optional[Callable[[MethodSigContext], CallableType]]:
-        return self.plugin.get_method_signature_hook(fullname)
-
-    def get_method_hook(self, fullname: str
-                        ) -> Optional[Callable[[MethodContext], Type]]:
-        return self.plugin.get_method_hook(fullname)
-
-    def get_attribute_hook(self, fullname: str
-                           ) -> Optional[Callable[[AttributeContext], Type]]:
-        return self.plugin.get_attribute_hook(fullname)
-
-    def get_class_decorator_hook(self, fullname: str
-                                 ) -> Optional[Callable[[ClassDefContext], None]]:
-        return self.plugin.get_class_decorator_hook(fullname)
-
-    def get_metaclass_hook(self, fullname: str
-                           ) -> Optional[Callable[[ClassDefContext], None]]:
-        return self.plugin.get_metaclass_hook(fullname)
-
-    def get_base_class_hook(self, fullname: str
-                            ) -> Optional[Callable[[ClassDefContext], None]]:
-        return self.plugin.get_base_class_hook(fullname)
-
-    def get_customize_class_mro_hook(self, fullname: str
-                                     ) -> Optional[Callable[[ClassDefContext], None]]:
-        return self.plugin.get_customize_class_mro_hook(fullname)
-
-    def get_dynamic_class_hook(self, fullname: str
-                               ) -> Optional[Callable[[DynamicClassDefContext], None]]:
-        return self.plugin.get_dynamic_class_hook(fullname)
 
 
 class ChainedPlugin(Plugin):
@@ -738,6 +704,10 @@ class ChainedPlugin(Plugin):
     def set_modules(self, modules: Dict[str, MypyFile]) -> None:
         for plugin in self._plugins:
             plugin.set_modules(modules)
+
+    def report_config_data(self, ctx: ReportConfigContext) -> Any:
+        config_data = [plugin.report_config_data(ctx) for plugin in self._plugins]
+        return config_data if any(x is not None for x in config_data) else None
 
     def get_additional_deps(self, file: MypyFile) -> List[Tuple[int, str, int]]:
         deps = []
@@ -791,18 +761,3 @@ class ChainedPlugin(Plugin):
             if hook:
                 return hook
         return None
-
-
-def _dummy() -> None:
-    """Only used to test whether we are running in compiled mode."""
-
-
-# This is an incredibly frumious hack. If this module is compiled by mypyc,
-# set the module 'Plugin' attribute to point to InterpretedPlugin. This means
-# that anything interpreted that imports Plugin will get InterpretedPlugin
-# while anything compiled alongside this module will get the real Plugin.
-if isinstance(_dummy, types.BuiltinFunctionType):
-    plugin_types = (Plugin, mypy.interpreted_plugin.InterpretedPlugin)  # type: Tuple[type, ...]
-    globals()['Plugin'] = mypy.interpreted_plugin.InterpretedPlugin
-else:
-    plugin_types = (Plugin,)
