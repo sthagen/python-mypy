@@ -4,7 +4,6 @@ This also deals with generators, async functions and nested functions.
 """
 
 from typing import Optional, List, Tuple, Union
-from typing_extensions import TYPE_CHECKING
 
 from mypy.nodes import (
     ClassDef, FuncDef, OverloadedFuncDef, Decorator, Var, YieldFromExpr, AwaitExpr, YieldExpr,
@@ -30,16 +29,14 @@ from mypyc.common import (
 from mypyc.sametype import is_same_method_signature
 from mypyc.genopsutil import concrete_arg_kind, is_constant, add_self_to_env
 from mypyc.genopscontext import FuncInfo, GeneratorClass, ImplicitClass
-
-if TYPE_CHECKING:
-    from mypyc.genops import IRBuilder
+from mypyc.genstatement import transform_try_except
+from mypyc.genops import IRBuilder
 
 
 class BuildFuncIR:
-    def __init__(self, builder: 'IRBuilder') -> None:
+    def __init__(self, builder: IRBuilder) -> None:
         self.builder = builder
         self.module_name = builder.module_name
-        self.environments = builder.environments
         self.functions = builder.functions
         self.mapper = builder.mapper
 
@@ -117,7 +114,7 @@ class BuildFuncIR:
         if expr.expr:
             retval = self.builder.accept(expr.expr)
         else:
-            retval = self.builder.none()
+            retval = self.builder.builder.none()
         return self.emit_yield(retval, expr.line)
 
     def visit_yield_from_expr(self, o: YieldFromExpr) -> Value:
@@ -504,14 +501,16 @@ class BuildFuncIR:
 
     def create_switch_for_generator_class(self) -> None:
         self.add(Goto(self.fn_info.generator_class.switch_block))
-        self.fn_info.generator_class.blocks.append(self.builder.new_block())
+        block = BasicBlock()
+        self.fn_info.generator_class.continuation_blocks.append(block)
+        self.builder.activate_block(block)
 
     def populate_switch_for_generator_class(self) -> None:
         cls = self.fn_info.generator_class
         line = self.fn_info.fitem.line
 
         self.builder.activate_block(cls.switch_block)
-        for label, true_block in enumerate(cls.blocks):
+        for label, true_block in enumerate(cls.continuation_blocks):
             false_block = BasicBlock()
             comparison = self.builder.binary_op(
                 cls.next_label_reg, self.add(LoadInt(label)), '==', line
@@ -767,8 +766,8 @@ class BuildFuncIR:
         # set the next label so that the next time '__next__' is called on the generator object,
         # the function continues at the new block.
         next_block = BasicBlock()
-        next_label = len(cls.blocks)
-        cls.blocks.append(next_block)
+        next_label = len(cls.continuation_blocks)
+        cls.continuation_blocks.append(next_block)
         self.assign(cls.next_label_target, self.add(LoadInt(next_label)), line)
         self.add(Return(retval))
         self.builder.activate_block(next_block)
@@ -853,7 +852,9 @@ class BuildFuncIR:
             self.builder.nonlocal_control[-1].gen_break(self.builder, o.line)
 
         self.builder.push_loop_stack(loop_block, done_block)
-        self.builder.visit_try_except(try_body, [(None, None, except_body)], else_body, o.line)
+        transform_try_except(
+            self.builder, try_body, [(None, None, except_body)], else_body, o.line
+        )
         self.builder.pop_loop_stack()
 
         self.builder.goto_and_activate(done_block)
@@ -874,7 +875,7 @@ class BuildFuncIR:
         decorators = self.builder.fdefs_to_decorators[fdef]
         func_reg = orig_func_reg
         for d in reversed(decorators):
-            decorator = d.accept(self.builder)
+            decorator = d.accept(self.builder.visitor)
             assert isinstance(decorator, Value)
             func_reg = self.builder.py_call(decorator, [func_reg], func_reg.line)
         return func_reg
@@ -944,10 +945,10 @@ class BuildFuncIR:
         arg_kinds = [concrete_arg_kind(arg.kind) for arg in rt_args]
 
         if do_pycall:
-            retval = self.builder.py_method_call(
+            retval = self.builder.builder.py_method_call(
                 args[0], target.name, args[1:], line, arg_kinds[1:], arg_names[1:])
         else:
-            retval = self.builder.call(target.decl, args, arg_kinds, arg_names, line)
+            retval = self.builder.builder.call(target.decl, args, arg_kinds, arg_names, line)
         retval = self.builder.coerce(retval, sig.ret_type, line)
         self.add(Return(retval))
 
@@ -1216,13 +1217,13 @@ class BuildFuncIR:
         return env
 
     def load_outer_envs(self, base: ImplicitClass) -> None:
-        index = len(self.environments) - 2
+        index = len(self.builder.builders) - 2
 
         # Load the first outer environment. This one is special because it gets saved in the
         # FuncInfo instance's prev_env_reg field.
         if index > 1:
             # outer_env = self.fn_infos[index].environment
-            outer_env = self.environments[index]
+            outer_env = self.builder.builders[index].environment
             if isinstance(base, GeneratorClass):
                 base.prev_env_reg = self.load_outer_env(base.curr_env_reg, outer_env)
             else:
@@ -1233,7 +1234,7 @@ class BuildFuncIR:
         # Load the remaining outer environments into registers.
         while index > 1:
             # outer_env = self.fn_infos[index].environment
-            outer_env = self.environments[index]
+            outer_env = self.builder.builders[index].environment
             env_reg = self.load_outer_env(env_reg, outer_env)
             index -= 1
 
