@@ -2521,14 +2521,29 @@ def log_configuration(manager: BuildManager) -> None:
     """Output useful configuration information to LOG and TRACE"""
 
     manager.log()
-    configuration_vars = (
+    configuration_vars = [
         ("Mypy Version", __version__),
         ("Config File", (manager.options.config_file or "Default")),
-        ("Configured Executable", manager.options.python_executable),
+    ]
+
+    src_pth_str = "Source Path"
+    src_pths = list(manager.source_set.source_paths.copy())
+    src_pths.sort()
+
+    if len(src_pths) > 1:
+        src_pth_str += "s"
+        configuration_vars.append((src_pth_str, " ".join(src_pths)))
+    elif len(src_pths) == 1:
+        configuration_vars.append((src_pth_str, src_pths.pop()))
+    else:
+        configuration_vars.append((src_pth_str, "None"))
+
+    configuration_vars.extend([
+        ("Configured Executable", manager.options.python_executable or "None"),
         ("Current Executable", sys.executable),
         ("Cache Dir", manager.options.cache_dir),
         ("Compiled", str(not __file__.endswith(".py"))),
-    )
+    ])
 
     for conf_name, conf_value in configuration_vars:
         manager.log("{:24}{}".format(conf_name + ":", conf_value))
@@ -2736,6 +2751,11 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
         graph[st.id] = st
         new.append(st)
         entry_points.add(bs.module)
+
+    # Note: Running this each time could be slow in the daemon. If it's a problem, we
+    # can do more work to maintain this incrementally.
+    seen_files = {st.path: st for st in graph.values() if st.path}
+
     # Collect dependencies.  We go breadth-first.
     # More nodes might get added to new as we go, but that's fine.
     for st in new:
@@ -2781,6 +2801,17 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
                     if dep in st.dependencies_set:
                         st.suppress_dependency(dep)
                 else:
+                    if newst.path in seen_files:
+                        manager.errors.report(
+                            -1, 0,
+                            "Source file found twice under different module names: '{}' and '{}'".
+                            format(seen_files[newst.path].id, newst.id),
+                            blocker=True)
+                        manager.errors.raise_error()
+
+                    if newst.path:
+                        seen_files[newst.path] = newst
+
                     assert newst.id not in graph, newst.id
                     graph[newst.id] = newst
                     new.append(newst)
