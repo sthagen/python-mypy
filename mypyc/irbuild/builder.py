@@ -13,7 +13,7 @@ functions are transformed in mypyc.irbuild.function.
 
 from typing import Callable, Dict, List, Tuple, Optional, Union, Sequence, Set, Any
 from typing_extensions import overload
-from collections import OrderedDict
+from mypy.ordered_dict import OrderedDict
 
 from mypy.build import Graph
 from mypy.nodes import (
@@ -24,6 +24,7 @@ from mypy.nodes import (
 from mypy.types import (
     Type, Instance, TupleType, UninhabitedType, get_proper_type
 )
+from mypy.maptype import map_instance_to_supertype
 from mypy.visitor import ExpressionVisitor, StatementVisitor
 from mypy.util import split_target
 
@@ -33,7 +34,7 @@ from mypyc.ir.ops import (
     BasicBlock, AssignmentTarget, AssignmentTargetRegister, AssignmentTargetIndex,
     AssignmentTargetAttr, AssignmentTargetTuple, Environment, LoadInt, Value,
     Register, Op, Assign, Branch, Unreachable, TupleGet, GetAttr, SetAttr, LoadStatic,
-    InitStatic, PrimitiveOp, OpDescription, NAMESPACE_MODULE, RaiseStandardError
+    InitStatic, PrimitiveOp, OpDescription, NAMESPACE_MODULE, RaiseStandardError,
 )
 from mypyc.ir.rtypes import (
     RType, RTuple, RInstance, int_rprimitive, dict_rprimitive,
@@ -42,7 +43,7 @@ from mypyc.ir.rtypes import (
 )
 from mypyc.ir.func_ir import FuncIR, INVALID_FUNC_DEF
 from mypyc.ir.class_ir import ClassIR, NonExtClassInfo
-from mypyc.primitives.registry import func_ops
+from mypyc.primitives.registry import func_ops, CFunctionDescription, c_function_ops
 from mypyc.primitives.list_ops import list_len_op, to_list, list_pop_last
 from mypyc.primitives.dict_ops import dict_get_item_op, dict_set_item_op
 from mypyc.primitives.generic_ops import py_setattr_op, iter_op, next_op
@@ -228,6 +229,15 @@ class IRBuilder:
     def load_module(self, name: str) -> Value:
         return self.builder.load_module(name)
 
+    def call_c(self, desc: CFunctionDescription, args: List[Value], line: int) -> Value:
+        return self.builder.call_c(desc, args, line)
+
+    def binary_int_op(self, type: RType, lhs: Value, rhs: Value, op: int, line: int) -> Value:
+        return self.builder.binary_int_op(type, lhs, rhs, op, line)
+
+    def compare_tagged(self, lhs: Value, rhs: Value, op: str, line: int) -> Value:
+        return self.builder.compare_tagged(lhs, rhs, op, line)
+
     @property
     def environment(self) -> Environment:
         return self.builder.environment
@@ -238,7 +248,7 @@ class IRBuilder:
                             key: str, val: Value, line: int) -> None:
         # Add an attribute entry into the class dict of a non-extension class.
         key_unicode = self.load_static_unicode(key)
-        self.primitive_op(dict_set_item_op, [non_ext.dict, key_unicode, val], line)
+        self.call_c(dict_set_item_op, [non_ext.dict, key_unicode, val], line)
 
     def gen_import(self, id: str, line: int) -> None:
         self.imports[id] = None
@@ -314,20 +324,12 @@ class IRBuilder:
 
     def load_final_static(self, fullname: str, typ: RType, line: int,
                           error_name: Optional[str] = None) -> Value:
-        if error_name is None:
-            error_name = fullname
-        ok_block, error_block = BasicBlock(), BasicBlock()
         split_name = split_target(self.graph, fullname)
         assert split_name is not None
-        value = self.add(LoadStatic(typ, split_name[1], split_name[0], line=line))
-        self.add(Branch(value, error_block, ok_block, Branch.IS_ERROR, rare=True))
-        self.activate_block(error_block)
-        self.add(RaiseStandardError(RaiseStandardError.VALUE_ERROR,
-                                    'value for final name "{}" was not set'.format(error_name),
-                                    line))
-        self.add(Unreachable())
-        self.activate_block(ok_block)
-        return value
+        module, name = split_name
+        return self.builder.load_static_checked(
+            typ, name, module, line=line,
+            error_msg='value for final name "{}" was not set'.format(error_name))
 
     def load_final_literal_value(self, val: Union[int, str, bytes, float, bool],
                                  line: int) -> Value:
@@ -505,7 +507,7 @@ class IRBuilder:
         # Assign the starred value and all values after it
         if target.star_idx is not None:
             post_star_vals = target.items[split_idx + 1:]
-            iter_list = self.primitive_op(to_list, [iterator], line)
+            iter_list = self.call_c(to_list, [iterator], line)
             iter_list_len = self.primitive_op(list_len_op, [iter_list], line)
             post_star_len = self.add(LoadInt(len(post_star_vals)))
             condition = self.binary_op(post_star_len, iter_list_len, '<=', line)
@@ -521,7 +523,7 @@ class IRBuilder:
             self.activate_block(ok_block)
 
             for litem in reversed(post_star_vals):
-                ritem = self.primitive_op(list_pop_last, [iter_list], line)
+                ritem = self.call_c(list_pop_last, [iter_list], line)
                 self.assign(litem, ritem, line)
 
             # Assign the starred value
@@ -603,6 +605,30 @@ class IRBuilder:
             return str_rprimitive
         else:
             return self.type_to_rtype(target_type.args[0])
+
+    def get_dict_base_type(self, expr: Expression) -> Instance:
+        """Find dict type of a dict-like expression.
+
+        This is useful for dict subclasses like SymbolTable.
+        """
+        target_type = get_proper_type(self.types[expr])
+        assert isinstance(target_type, Instance)
+        dict_base = next(base for base in target_type.type.mro
+                         if base.fullname == 'builtins.dict')
+        return map_instance_to_supertype(target_type, dict_base)
+
+    def get_dict_key_type(self, expr: Expression) -> RType:
+        dict_base_type = self.get_dict_base_type(expr)
+        return self.type_to_rtype(dict_base_type.args[0])
+
+    def get_dict_value_type(self, expr: Expression) -> RType:
+        dict_base_type = self.get_dict_base_type(expr)
+        return self.type_to_rtype(dict_base_type.args[1])
+
+    def get_dict_item_type(self, expr: Expression) -> RType:
+        key_type = self.get_dict_key_type(expr)
+        value_type = self.get_dict_value_type(expr)
+        return RTuple([key_type, value_type])
 
     def _analyze_iterable_item_type(self, expr: Expression) -> Type:
         """Return the item type given by 'expr' in an iterable context."""
@@ -698,6 +724,11 @@ class IRBuilder:
 
         # Handle data-driven special-cased primitive call ops.
         if callee.fullname is not None and expr.arg_kinds == [ARG_POS] * len(arg_values):
+            call_c_ops_candidates = c_function_ops.get(callee.fullname, [])
+            target = self.builder.matching_call_c(call_c_ops_candidates, arg_values,
+                                                  expr.line, self.node_type(expr))
+            if target:
+                return target
             ops = func_ops.get(callee.fullname, [])
             target = self.builder.matching_primitive_op(
                 ops, arg_values, expr.line, self.node_type(expr)
@@ -856,7 +887,7 @@ class IRBuilder:
     def load_global_str(self, name: str, line: int) -> Value:
         _globals = self.load_globals_dict()
         reg = self.load_static_unicode(name)
-        return self.primitive_op(dict_get_item_op, [_globals, reg], line)
+        return self.call_c(dict_get_item_op, [_globals, reg], line)
 
     def load_globals_dict(self) -> Value:
         return self.add(LoadStatic(dict_rprimitive, 'globals', self.module_name))

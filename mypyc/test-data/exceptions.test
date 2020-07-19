@@ -14,7 +14,7 @@ def f(x):
     r2, r3 :: int
 L0:
     r0 = 0
-    r1 = x[r0] :: list
+    r1 = CPyList_GetItemShort(x, r0)
     if is_error(r1) goto L3 (error at f:3) else goto L1
 L1:
     r2 = unbox(int, r1)
@@ -36,7 +36,7 @@ def f(x, y, z):
     x :: list
     y, z :: int
     r0 :: object
-    r1 :: bool
+    r1 :: int32
     r2 :: None
     r3 :: object
     r4 :: bool
@@ -44,14 +44,14 @@ def f(x, y, z):
 L0:
     inc_ref y :: int
     r0 = box(int, y)
-    r1 = x.append(r0) :: list
+    r1 = PyList_Append(x, r0)
     dec_ref r0
-    if not r1 goto L3 (error at f:3) else goto L1 :: bool
+    if r1 < 0 goto L3 (error at f:3) else goto L1
 L1:
     r2 = None
     inc_ref z :: int
     r3 = box(int, z)
-    r4 = x.__setitem__(y, r3) :: list
+    r4 = CPyList_SetItem(x, y, r3)
     if not r4 goto L3 (error at f:4) else goto L2 :: bool
 L2:
     r5 = None
@@ -90,7 +90,7 @@ L0:
     r2 = x is r1
     if r2 goto L1 else goto L2 :: bool
 L1:
-    r3 = 1
+    r3 = 2
     return r3
 L2:
     inc_ref x
@@ -104,10 +104,10 @@ L3:
     r8 = !r7
     if r8 goto L4 else goto L5 :: bool
 L4:
-    r9 = 2
+    r9 = 4
     return r9
 L5:
-    r10 = 3
+    r10 = 6
     return r10
 L6:
     r11 = <error> :: int
@@ -131,47 +131,68 @@ def sum(a, l):
     r1 :: short_int
     i :: int
     r2 :: bool
-    r3 :: object
-    r4, r5 :: int
-    r6 :: short_int
-    r7, r8 :: int
+    r3, r4, r5 :: native_int
+    r6 :: bool
+    r7, r8, r9 :: native_int
+    r10, r11, r12, r13 :: bool
+    r14 :: object
+    r15, r16 :: int
+    r17 :: short_int
+    r18, r19 :: int
 L0:
     r0 = 0
     sum = r0
     r1 = 0
     i = r1
 L1:
-    r2 = i < l :: int
-    if r2 goto L2 else goto L7 :: bool
+    r3 = 1
+    r4 = i & r3
+    r5 = 0
+    r6 = r4 == r5
+    r7 = 1
+    r8 = l & r7
+    r9 = 0
+    r10 = r8 == r9
+    r11 = r6 & r10
+    if r11 goto L2 else goto L3 :: bool
 L2:
-    r3 = a[i] :: list
-    if is_error(r3) goto L8 (error at sum:6) else goto L3
+    r12 = i < l
+    r2 = r12
+    goto L4
 L3:
-    r4 = unbox(int, r3)
-    dec_ref r3
-    if is_error(r4) goto L8 (error at sum:6) else goto L4
+    r13 = CPyTagged_IsLt_(i, l)
+    r2 = r13
 L4:
-    r5 = sum + r4 :: int
-    dec_ref sum :: int
-    dec_ref r4 :: int
-    sum = r5
-    r6 = 1
-    r7 = i + r6 :: int
-    dec_ref i :: int
-    i = r7
-    goto L1
+    if r2 goto L5 else goto L10 :: bool
 L5:
-    return sum
+    r14 = CPyList_GetItem(a, i)
+    if is_error(r14) goto L11 (error at sum:6) else goto L6
 L6:
-    r8 = <error> :: int
-    return r8
+    r15 = unbox(int, r14)
+    dec_ref r14
+    if is_error(r15) goto L11 (error at sum:6) else goto L7
 L7:
+    r16 = CPyTagged_Add(sum, r15)
+    dec_ref sum :: int
+    dec_ref r15 :: int
+    sum = r16
+    r17 = 2
+    r18 = CPyTagged_Add(i, r17)
     dec_ref i :: int
-    goto L5
+    i = r18
+    goto L1
 L8:
+    return sum
+L9:
+    r19 = <error> :: int
+    return r19
+L10:
+    dec_ref i :: int
+    goto L8
+L11:
     dec_ref sum :: int
     dec_ref i :: int
-    goto L6
+    goto L9
 
 [case testTryExcept]
 def g() -> None:
@@ -202,7 +223,7 @@ L2:
     dec_ref r2
     if is_error(r3) goto L3 (error at g:3) else goto L10
 L3:
-    r4 = error_catch
+    r4 = CPy_CatchError()
     r5 = unicode_2 :: static  ('weeee')
     r6 = builtins :: module
     r7 = unicode_3 :: static  ('print')
@@ -213,11 +234,11 @@ L4:
     dec_ref r8
     if is_error(r9) goto L6 (error at g:5) else goto L11
 L5:
-    restore_exc_info r4
+    CPy_RestoreExcInfo(r4)
     dec_ref r4
     goto L8
 L6:
-    restore_exc_info r4
+    CPy_RestoreExcInfo(r4)
     dec_ref r4
     r10 = keep_propagating
     if not r10 goto L9 else goto L7 :: bool
@@ -258,8 +279,9 @@ def a():
     r12 :: object
     r13 :: str
     r14, r15 :: object
-    r16, r17 :: bool
-    r18 :: str
+    r16 :: bool
+    r17 :: str
+    r18 :: bool
 L0:
 L1:
     r0 = builtins :: module
@@ -281,7 +303,7 @@ L4:
 L5:
     r9 = <error> :: str
     r5 = r9
-    r10 = error_catch
+    r10 = CPy_CatchError()
     r6 = r10
 L6:
     r11 = unicode_3 :: static  ('goodbye!')
@@ -296,8 +318,9 @@ L7:
 L8:
     if is_error(r6) goto L11 else goto L9
 L9:
-    reraise_exc; r16 = 0
-    if not r16 goto L13 else goto L22 :: bool
+    CPy_Reraise()
+    r18 = 0
+    if not r18 goto L13 else goto L22 :: bool
 L10:
     unreachable
 L11:
@@ -309,18 +332,18 @@ L13:
 L14:
     if is_error(r6) goto L16 else goto L15
 L15:
-    restore_exc_info r6
+    CPy_RestoreExcInfo(r6)
     dec_ref r6
 L16:
-    r17 = keep_propagating
-    if not r17 goto L19 else goto L17 :: bool
+    r16 = keep_propagating
+    if not r16 goto L19 else goto L17 :: bool
 L17:
     unreachable
 L18:
     unreachable
 L19:
-    r18 = <error> :: str
-    return r18
+    r17 = <error> :: str
+    return r17
 L20:
     dec_ref r3
     goto L3
@@ -373,9 +396,9 @@ L2:
     st = r1
     goto L4
 L3:
-    r2 = error_catch
+    r2 = CPy_CatchError()
     r3 = unicode_4 :: static
-    restore_exc_info r2
+    CPy_RestoreExcInfo(r2)
     dec_ref r2
     inc_ref r3
     return r3
@@ -418,9 +441,9 @@ L3:
     b = r3
     goto L6
 L4:
-    r4 = error_catch
+    r4 = CPy_CatchError()
 L5:
-    restore_exc_info r4
+    CPy_RestoreExcInfo(r4)
     dec_ref r4
 L6:
     if is_error(a) goto L17 else goto L9

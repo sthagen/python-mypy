@@ -7,7 +7,8 @@ from mypyc.ir.rtypes import (
     RType, object_rprimitive, str_rprimitive, bool_rprimitive, int_rprimitive, list_rprimitive
 )
 from mypyc.primitives.registry import (
-    func_op, binary_op, simple_emit, name_ref_op, method_op, call_emit, name_emit,
+    binary_op, simple_emit, name_ref_op, method_op, call_emit, name_emit,
+    c_method_op, c_binary_op, c_function_op
 )
 
 
@@ -19,34 +20,37 @@ name_ref_op('builtins.str',
             is_borrowed=True)
 
 # str(obj)
-func_op(name='builtins.str',
-        arg_types=[object_rprimitive],
-        result_type=str_rprimitive,
-        error_kind=ERR_MAGIC,
-        emit=call_emit('PyObject_Str'))
+c_function_op(
+    name='builtins.str',
+    arg_types=[object_rprimitive],
+    return_type=str_rprimitive,
+    c_function_name='PyObject_Str',
+    error_kind=ERR_MAGIC)
 
 # str1 + str2
-binary_op(op='+',
-          arg_types=[str_rprimitive, str_rprimitive],
-          result_type=str_rprimitive,
-          error_kind=ERR_MAGIC,
-          emit=call_emit('PyUnicode_Concat'))
+c_binary_op(name='+',
+            arg_types=[str_rprimitive, str_rprimitive],
+            return_type=str_rprimitive,
+            c_function_name='PyUnicode_Concat',
+            error_kind=ERR_MAGIC)
 
 # str.join(obj)
-method_op(
+c_method_op(
     name='join',
     arg_types=[str_rprimitive, object_rprimitive],
-    result_type=str_rprimitive,
-    error_kind=ERR_MAGIC,
-    emit=call_emit('PyUnicode_Join'))
+    return_type=str_rprimitive,
+    c_function_name='PyUnicode_Join',
+    error_kind=ERR_MAGIC
+)
 
 # str[index] (for an int index)
-method_op(
+c_method_op(
     name='__getitem__',
     arg_types=[str_rprimitive, int_rprimitive],
-    result_type=str_rprimitive,
-    error_kind=ERR_MAGIC,
-    emit=call_emit('CPyStr_GetItem'))
+    return_type=str_rprimitive,
+    c_function_name='CPyStr_GetItem',
+    error_kind=ERR_MAGIC
+)
 
 # str.split(...)
 str_split_types = [str_rprimitive, str_rprimitive, int_rprimitive]  # type: List[RType]
@@ -66,12 +70,12 @@ for i in range(len(str_split_types)):
 #
 # PyUnicodeAppend makes an effort to reuse the LHS when the refcount
 # is 1. This is super dodgy but oh well, the interpreter does it.
-binary_op(op='+=',
-          arg_types=[str_rprimitive, str_rprimitive],
-          steals=[True, False],
-          result_type=str_rprimitive,
-          error_kind=ERR_MAGIC,
-          emit=call_emit('CPyStr_Append'))
+c_binary_op(name='+=',
+            arg_types=[str_rprimitive, str_rprimitive],
+            return_type=str_rprimitive,
+            c_function_name='CPyStr_Append',
+            error_kind=ERR_MAGIC,
+            steals=[True, False])
 
 
 def emit_str_compare(comparison: str) -> Callable[[EmitterInterface, List[str], str], None]:

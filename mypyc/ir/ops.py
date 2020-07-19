@@ -15,7 +15,7 @@ from typing import (
     List, Sequence, Dict, Generic, TypeVar, Optional, Any, NamedTuple, Tuple, Callable,
     Union, Iterable, Set
 )
-from collections import OrderedDict
+from mypy.ordered_dict import OrderedDict
 
 from typing_extensions import Final, Type, TYPE_CHECKING
 from mypy_extensions import trait
@@ -293,6 +293,10 @@ ERR_NEVER = 0  # type: Final
 ERR_MAGIC = 1  # type: Final
 # Generates false (bool) on exception
 ERR_FALSE = 2  # type: Final
+# Generates negative integer on exception
+ERR_NEG_INT = 3  # type: Final
+# Always fails
+ERR_ALWAYS = 4  # type: Final
 
 # Hack: using this line number for an op will suppress it in tracebacks
 NO_TRACEBACK_LINE_NO = -10000
@@ -413,10 +417,12 @@ class Branch(ControlOp):
 
     BOOL_EXPR = 100  # type: Final
     IS_ERROR = 101  # type: Final
+    NEG_INT_EXPR = 102  # type: Final
 
     op_names = {
         BOOL_EXPR: ('%r', 'bool'),
         IS_ERROR: ('is_error(%r)', ''),
+        NEG_INT_EXPR: ('%r < 0', ''),
     }  # type: Final
 
     def __init__(self,
@@ -783,10 +789,13 @@ class LoadInt(RegisterOp):
 
     error_kind = ERR_NEVER
 
-    def __init__(self, value: int, line: int = -1) -> None:
+    def __init__(self, value: int, line: int = -1, rtype: RType = short_int_rprimitive) -> None:
         super().__init__(line)
-        self.value = value
-        self.type = short_int_rprimitive
+        if is_short_int_rprimitive(rtype) or is_int_rprimitive(rtype):
+            self.value = value * 2
+        else:
+            self.value = value
+        self.type = rtype
 
     def sources(self) -> List[Value]:
         return []
@@ -1113,6 +1122,7 @@ class RaiseStandardError(RegisterOp):
     STOP_ITERATION = 'StopIteration'  # type: Final
     UNBOUND_LOCAL_ERROR = 'UnboundLocalError'  # type: Final
     RUNTIME_ERROR = 'RuntimeError'  # type: Final
+    NAME_ERROR = 'NameError'  # type: Final
 
     def __init__(self, class_name: str, value: Optional[Union[str, Value]], line: int) -> None:
         super().__init__(line)
@@ -1136,6 +1146,177 @@ class RaiseStandardError(RegisterOp):
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_raise_standard_error(self)
+
+
+class CallC(RegisterOp):
+    """ret = func_call(arg0, arg1, ...)
+
+    A call to a C function
+    """
+
+    def __init__(self,
+                 function_name: str,
+                 args: List[Value],
+                 ret_type: RType,
+                 steals: StealsDescription,
+                 error_kind: int,
+                 line: int,
+                 var_arg_idx: int = -1) -> None:
+        self.error_kind = error_kind
+        super().__init__(line)
+        self.function_name = function_name
+        self.args = args
+        self.type = ret_type
+        self.steals = steals
+        self.var_arg_idx = var_arg_idx  # the position of the first variable argument in args
+
+    def to_str(self, env: Environment) -> str:
+        args_str = ', '.join(env.format('%r', arg) for arg in self.args)
+        if self.is_void:
+            return env.format('%s(%s)', self.function_name, args_str)
+        else:
+            return env.format('%r = %s(%s)', self, self.function_name, args_str)
+
+    def sources(self) -> List[Value]:
+        return self.args
+
+    def stolen(self) -> List[Value]:
+        if isinstance(self.steals, list):
+            assert len(self.steals) == len(self.args)
+            return [arg for arg, steal in zip(self.args, self.steals) if steal]
+        else:
+            return [] if not self.steals else self.sources()
+
+    def accept(self, visitor: 'OpVisitor[T]') -> T:
+        return visitor.visit_call_c(self)
+
+
+class Truncate(RegisterOp):
+    """truncate src: src_type to dst_type
+
+    Truncate a value from type with more bits to type with less bits
+
+    both src_type and dst_type should be non-reference counted integer types or bool
+    especially note that int_rprimitive is reference counted so should never be used here
+    """
+
+    error_kind = ERR_NEVER
+
+    def __init__(self,
+                 src: Value,
+                 src_type: RType,
+                 dst_type: RType,
+                 line: int = -1) -> None:
+        super().__init__(line)
+        self.src = src
+        self.src_type = src_type
+        self.type = dst_type
+
+    def sources(self) -> List[Value]:
+        return [self.src]
+
+    def stolen(self) -> List[Value]:
+        return []
+
+    def to_str(self, env: Environment) -> str:
+        return env.format("%r = truncate %r: %r to %r", self, self.src, self.src_type, self.type)
+
+    def accept(self, visitor: 'OpVisitor[T]') -> T:
+        return visitor.visit_truncate(self)
+
+
+class LoadGlobal(RegisterOp):
+    """Load a global variable/pointer"""
+
+    error_kind = ERR_NEVER
+    is_borrowed = True
+
+    def __init__(self,
+                 type: RType,
+                 identifier: str,
+                 line: int = -1,
+                 ann: object = None) -> None:
+        super().__init__(line)
+        self.identifier = identifier
+        self.type = type
+        self.ann = ann  # An object to pretty print with the load
+
+    def sources(self) -> List[Value]:
+        return []
+
+    def to_str(self, env: Environment) -> str:
+        ann = '  ({})'.format(repr(self.ann)) if self.ann else ''
+        # return env.format('%r = %s%s', self, self.identifier, ann)
+        # TODO: a hack to prevent lots of failed IR tests when developing prototype
+        #       eventually we will change all the related tests
+        return env.format('%r = %s :: static%s', self, self.identifier[10:], ann)
+
+    def accept(self, visitor: 'OpVisitor[T]') -> T:
+        return visitor.visit_load_global(self)
+
+
+class BinaryIntOp(RegisterOp):
+    """Binary operations on integer types
+
+    These ops are low-level and will be eventually generated to simple x op y form.
+    The left and right values should be of low-level integer types that support those ops
+    """
+    error_kind = ERR_NEVER
+
+    # arithmetic
+    ADD = 0  # type: Final
+    SUB = 1  # type: Final
+    MUL = 2  # type: Final
+    DIV = 3  # type: Final
+    MOD = 4  # type: Final
+    # logical
+    EQ = 100  # type: Final
+    NEQ = 101  # type: Final
+    LT = 102  # type: Final
+    GT = 103  # type: Final
+    LEQ = 104  # type: Final
+    GEQ = 105  # type: Final
+    # bitwise
+    AND = 200  # type: Final
+    OR = 201  # type: Final
+    XOR = 202  # type: Final
+    LEFT_SHIFT = 203  # type: Final
+    RIGHT_SHIFT = 204  # type: Final
+
+    op_str = {
+        ADD: '+',
+        SUB: '-',
+        MUL: '*',
+        DIV: '/',
+        MOD: '%',
+        EQ: '==',
+        NEQ: '!=',
+        LT: '<',
+        GT: '>',
+        LEQ: '<=',
+        GEQ: '>=',
+        AND: '&',
+        OR: '|',
+        XOR: '^',
+        LEFT_SHIFT: '<<',
+        RIGHT_SHIFT: '>>',
+    }  # type: Final
+
+    def __init__(self, type: RType, lhs: Value, rhs: Value, op: int, line: int = -1) -> None:
+        super().__init__(line)
+        self.type = type
+        self.lhs = lhs
+        self.rhs = rhs
+        self.op = op
+
+    def sources(self) -> List[Value]:
+        return [self.lhs, self.rhs]
+
+    def to_str(self, env: Environment) -> str:
+        return env.format('%r = %r %s %r', self, self.lhs, self.op_str[self.op], self.rhs)
+
+    def accept(self, visitor: 'OpVisitor[T]') -> T:
+        return visitor.visit_binary_int_op(self)
 
 
 @trait
@@ -1226,6 +1407,22 @@ class OpVisitor(Generic[T]):
 
     @abstractmethod
     def visit_raise_standard_error(self, op: RaiseStandardError) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_call_c(self, op: CallC) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_truncate(self, op: Truncate) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_load_global(self, op: LoadGlobal) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_binary_int_op(self, op: BinaryIntOp) -> T:
         raise NotImplementedError
 
 

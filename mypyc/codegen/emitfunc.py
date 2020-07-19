@@ -11,7 +11,8 @@ from mypyc.ir.ops import (
     OpVisitor, Goto, Branch, Return, Assign, LoadInt, LoadErrorValue, GetAttr, SetAttr,
     LoadStatic, InitStatic, TupleGet, TupleSet, Call, IncRef, DecRef, Box, Cast, Unbox,
     BasicBlock, Value, MethodCall, PrimitiveOp, EmitterInterface, Unreachable, NAMESPACE_STATIC,
-    NAMESPACE_TYPE, NAMESPACE_MODULE, RaiseStandardError
+    NAMESPACE_TYPE, NAMESPACE_MODULE, RaiseStandardError, CallC, LoadGlobal, Truncate,
+    BinaryIntOp
 )
 from mypyc.ir.rtypes import RType, RTuple
 from mypyc.ir.func_ir import FuncIR, FuncDecl, FUNC_STATICMETHOD, FUNC_CLASSMETHOD
@@ -105,6 +106,9 @@ class FunctionEmitterVisitor(OpVisitor[None], EmitterInterface):
         if op.op == Branch.BOOL_EXPR:
             expr_result = self.reg(op.left)  # right isn't used
             cond = '{}{}'.format(neg, expr_result)
+        elif op.op == Branch.NEG_INT_EXPR:
+            expr_result = self.reg(op.left)
+            cond = '{} < 0'.format(expr_result)
         elif op.op == Branch.IS_ERROR:
             typ = op.left.type
             compare = '!=' if op.negated else '=='
@@ -127,15 +131,7 @@ class FunctionEmitterVisitor(OpVisitor[None], EmitterInterface):
 
         self.emit_line('if ({}) {{'.format(cond))
 
-        if op.traceback_entry is not None:
-            globals_static = self.emitter.static_name('globals', self.module_name)
-            self.emit_line('CPy_AddTraceback("%s", "%s", %d, %s);' % (
-                self.source_path.replace("\\", "\\\\"),
-                op.traceback_entry[0],
-                op.traceback_entry[1],
-                globals_static))
-            if DEBUG_ERRORS:
-                self.emit_line('assert(PyErr_Occurred() != NULL && "failure w/o err!");')
+        self.emit_traceback(op)
 
         self.emit_lines(
             'goto %s;' % self.label(op.true),
@@ -179,7 +175,7 @@ class FunctionEmitterVisitor(OpVisitor[None], EmitterInterface):
 
     def visit_load_int(self, op: LoadInt) -> None:
         dest = self.reg(op)
-        self.emit_line('%s = %d;' % (dest, op.value * 2))
+        self.emit_line('%s = %d;' % (dest, op.value))
 
     def visit_load_error_value(self, op: LoadErrorValue) -> None:
         if isinstance(op.type, RTuple):
@@ -415,6 +411,35 @@ class FunctionEmitterVisitor(OpVisitor[None], EmitterInterface):
             self.emitter.emit_line('PyErr_SetNone(PyExc_{});'.format(op.class_name))
         self.emitter.emit_line('{} = 0;'.format(self.reg(op)))
 
+    def visit_call_c(self, op: CallC) -> None:
+        if op.is_void:
+            dest = ''
+        else:
+            dest = self.get_dest_assign(op)
+        args = ', '.join(self.reg(arg) for arg in op.args)
+        self.emitter.emit_line("{}{}({});".format(dest, op.function_name, args))
+
+    def visit_truncate(self, op: Truncate) -> None:
+        dest = self.reg(op)
+        value = self.reg(op.src)
+        # for C backend the generated code are straight assignments
+        self.emit_line("{} = {};".format(dest, value))
+
+    def visit_load_global(self, op: LoadGlobal) -> None:
+        dest = self.reg(op)
+        ann = ''
+        if op.ann:
+            s = repr(op.ann)
+            if not any(x in s for x in ('/*', '*/', '\0')):
+                ann = ' /* %s */' % s
+        self.emit_line('%s = %s;%s' % (dest, op.identifier, ann))
+
+    def visit_binary_int_op(self, op: BinaryIntOp) -> None:
+        dest = self.reg(op)
+        lhs = self.reg(op.lhs)
+        rhs = self.reg(op.rhs)
+        self.emit_line('%s = %s %s %s;' % (dest, lhs, op.op_str[op.op], rhs))
+
     # Helpers
 
     def label(self, label: BasicBlock) -> str:
@@ -446,3 +471,14 @@ class FunctionEmitterVisitor(OpVisitor[None], EmitterInterface):
 
     def emit_declaration(self, line: str) -> None:
         self.declarations.emit_line(line)
+
+    def emit_traceback(self, op: Branch) -> None:
+        if op.traceback_entry is not None:
+            globals_static = self.emitter.static_name('globals', self.module_name)
+            self.emit_line('CPy_AddTraceback("%s", "%s", %d, %s);' % (
+                self.source_path.replace("\\", "\\\\"),
+                op.traceback_entry[0],
+                op.traceback_entry[1],
+                globals_static))
+            if DEBUG_ERRORS:
+                self.emit_line('assert(PyErr_Occurred() != NULL && "failure w/o err!");')

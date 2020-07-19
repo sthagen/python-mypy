@@ -25,7 +25,7 @@ def f(a):
     r1 :: bool
     r2 :: None
 L0:
-    r0 = 1
+    r0 = 2
     a.x = r0; r1 = is_error
     r2 = None
     return r2
@@ -55,17 +55,17 @@ def f():
 L0:
     r0 = C()
     c = r0
-    r1 = 5
+    r1 = 10
     c.x = r1; r2 = is_error
     r3 = [c]
     a = r3
     r4 = 0
-    r5 = a[r4] :: list
+    r5 = CPyList_GetItemShort(a, r4)
     r6 = cast(__main__.C, r5)
     d = r6
     r7 = d.x
-    r8 = 1
-    r9 = r7 + r8 :: int
+    r8 = 2
+    r9 = CPyTagged_Add(r7, r8)
     return r9
 
 [case testMethodCall]
@@ -83,8 +83,8 @@ def A.f(self, x, y):
     r0 :: short_int
     r1 :: int
 L0:
-    r0 = 10
-    r1 = x + r0 :: int
+    r0 = 20
+    r1 = CPyTagged_Add(x, r0)
     return r1
 def g(a):
     a :: __main__.A
@@ -93,7 +93,7 @@ def g(a):
     r2 :: int
     r3 :: None
 L0:
-    r0 = 1
+    r0 = 2
     r1 = unicode_4 :: static  ('hi')
     r2 = a.f(r0, r1)
     r3 = None
@@ -142,14 +142,14 @@ L0:
     r4 = !r3
     if r4 goto L1 else goto L2 :: bool
 L1:
-    r5 = 1
+    r5 = 2
     r6 = self.next
     r7 = cast(__main__.Node, r6)
     r8 = r7.length()
-    r9 = r5 + r8 :: int
+    r9 = CPyTagged_Add(r5, r8)
     return r9
 L2:
-    r10 = 1
+    r10 = 2
     return r10
 
 [case testSubclass]
@@ -167,7 +167,7 @@ def A.__init__(self):
     r1 :: bool
     r2 :: None
 L0:
-    r0 = 10
+    r0 = 20
     self.x = r0; r1 = is_error
     r2 = None
     return r2
@@ -179,9 +179,9 @@ def B.__init__(self):
     r3 :: bool
     r4 :: None
 L0:
-    r0 = 20
+    r0 = 40
     self.x = r0; r1 = is_error
-    r2 = 30
+    r2 = 60
     self.y = r2; r3 = is_error
     r4 = None
     return r4
@@ -201,7 +201,7 @@ def O.__init__(self):
     r1 :: bool
     r2 :: None
 L0:
-    r0 = 1
+    r0 = 2
     self.x = r0; r1 = is_error
     r2 = None
     return r2
@@ -213,8 +213,8 @@ def increment(o):
     r3 :: bool
 L0:
     r0 = o.x
-    r1 = 1
-    r2 = r0 += r1 :: int
+    r1 = 2
+    r2 = CPyTagged_Add(r0, r1)
     o.x = r2; r3 = is_error
     return o
 
@@ -241,12 +241,10 @@ def use_c(x: C, y: object) -> int:
 def A.foo(self, x):
     self :: __main__.A
     x :: int
-    r0 :: object
-    r1 :: str
+    r0 :: str
 L0:
-    r0 = box(int, x)
-    r1 = str r0 :: object
-    return r1
+    r0 = CPyTagged_Str(x)
+    return r0
 def B.foo(self, x):
     self :: __main__.B
     x :: object
@@ -265,7 +263,7 @@ def C.foo(self, x):
     x :: object
     r0 :: int
 L0:
-    r0 = id x :: object
+    r0 = CPyTagged_Id(x)
     return r0
 def C.foo__B_glue(self, x):
     self :: __main__.C
@@ -335,11 +333,11 @@ def __top_level__():
     r12 :: str
     r13 :: object
     r14 :: str
-    r15 :: bool
+    r15 :: int32
     r16 :: str
     r17 :: object
     r18 :: str
-    r19 :: bool
+    r19 :: int32
     r20, r21 :: object
     r22 :: bool
     r23 :: str
@@ -348,14 +346,14 @@ def __top_level__():
     r27 :: str
     r28 :: object
     r29 :: str
-    r30 :: bool
+    r30 :: int32
     r31 :: str
     r32 :: dict
     r33 :: str
     r34, r35 :: object
     r36 :: dict
     r37 :: str
-    r38 :: bool
+    r38 :: int32
     r39 :: object
     r40 :: str
     r41, r42 :: object
@@ -365,7 +363,7 @@ def __top_level__():
     r46 :: bool
     r47 :: dict
     r48 :: str
-    r49 :: bool
+    r49 :: int32
     r50 :: object
     r51 :: str
     r52, r53 :: object
@@ -374,7 +372,7 @@ def __top_level__():
     r56 :: bool
     r57 :: dict
     r58 :: str
-    r59 :: bool
+    r59 :: int32
     r60, r61 :: object
     r62 :: dict
     r63 :: str
@@ -391,7 +389,7 @@ def __top_level__():
     r77 :: bool
     r78 :: dict
     r79 :: str
-    r80 :: bool
+    r80 :: int32
     r81 :: None
 L0:
     r0 = builtins :: module
@@ -417,11 +415,11 @@ L4:
     r12 = unicode_2 :: static  ('TypeVar')
     r13 = getattr r10, r12
     r14 = unicode_2 :: static  ('TypeVar')
-    r15 = r11.__setitem__(r14, r13) :: dict
+    r15 = CPyDict_SetItem(r11, r14, r13)
     r16 = unicode_3 :: static  ('Generic')
     r17 = getattr r10, r16
     r18 = unicode_3 :: static  ('Generic')
-    r19 = r11.__setitem__(r18, r17) :: dict
+    r19 = CPyDict_SetItem(r11, r18, r17)
     r20 = mypy_extensions :: module
     r21 = builtins.None :: object
     r22 = r20 is not r21
@@ -436,15 +434,15 @@ L6:
     r27 = unicode_5 :: static  ('trait')
     r28 = getattr r25, r27
     r29 = unicode_5 :: static  ('trait')
-    r30 = r26.__setitem__(r29, r28) :: dict
+    r30 = CPyDict_SetItem(r26, r29, r28)
     r31 = unicode_6 :: static  ('T')
     r32 = __main__.globals :: static
     r33 = unicode_2 :: static  ('TypeVar')
-    r34 = r32[r33] :: dict
+    r34 = CPyDict_GetItem(r32, r33)
     r35 = py_call(r34, r31)
     r36 = __main__.globals :: static
     r37 = unicode_6 :: static  ('T')
-    r38 = r36.__setitem__(r37, r35) :: dict
+    r38 = CPyDict_SetItem(r36, r37, r35)
     r39 = <error> :: object
     r40 = unicode_7 :: static  ('__main__')
     r41 = __main__.C_template :: type
@@ -456,7 +454,7 @@ L6:
     __main__.C = r42 :: type
     r47 = __main__.globals :: static
     r48 = unicode_9 :: static  ('C')
-    r49 = r47.__setitem__(r48, r42) :: dict
+    r49 = CPyDict_SetItem(r47, r48, r42)
     r50 = <error> :: object
     r51 = unicode_7 :: static  ('__main__')
     r52 = __main__.S_template :: type
@@ -467,15 +465,15 @@ L6:
     __main__.S = r53 :: type
     r57 = __main__.globals :: static
     r58 = unicode_10 :: static  ('S')
-    r59 = r57.__setitem__(r58, r53) :: dict
+    r59 = CPyDict_SetItem(r57, r58, r53)
     r60 = __main__.C :: type
     r61 = __main__.S :: type
     r62 = __main__.globals :: static
     r63 = unicode_3 :: static  ('Generic')
-    r64 = r62[r63] :: dict
+    r64 = CPyDict_GetItem(r62, r63)
     r65 = __main__.globals :: static
     r66 = unicode_6 :: static  ('T')
-    r67 = r65[r66] :: dict
+    r67 = CPyDict_GetItem(r65, r66)
     r68 = r64[r67] :: object
     r69 = (r60, r61, r68) :: tuple
     r70 = unicode_7 :: static  ('__main__')
@@ -489,7 +487,7 @@ L6:
     __main__.D = r72 :: type
     r78 = __main__.globals :: static
     r79 = unicode_12 :: static  ('D')
-    r80 = r78.__setitem__(r79, r72) :: dict
+    r80 = CPyDict_SetItem(r78, r79, r72)
     r81 = None
     return r81
 
@@ -706,8 +704,8 @@ def C.foo(x):
     r0 :: short_int
     r1 :: int
 L0:
-    r0 = 10
-    r1 = r0 + x :: int
+    r0 = 20
+    r1 = CPyTagged_Add(r0, x)
     return r1
 def C.bar(cls, x):
     cls :: object
@@ -715,8 +713,8 @@ def C.bar(cls, x):
     r0 :: short_int
     r1 :: int
 L0:
-    r0 = 10
-    r1 = r0 + x :: int
+    r0 = 20
+    r1 = CPyTagged_Add(r0, x)
     return r1
 def lol():
     r0 :: short_int
@@ -725,12 +723,12 @@ def lol():
     r3 :: short_int
     r4, r5 :: int
 L0:
-    r0 = 1
+    r0 = 2
     r1 = C.foo(r0)
     r2 = __main__.C :: type
-    r3 = 2
+    r3 = 4
     r4 = C.bar(r2, r3)
-    r5 = r1 + r4 :: int
+    r5 = CPyTagged_Add(r1, r4)
     return r5
 
 [case testSuper1]
@@ -1019,7 +1017,7 @@ def A.lol(self):
     r1 :: bool
     r2 :: None
 L0:
-    r0 = 100
+    r0 = 200
     self.x = r0; r1 = is_error
     r2 = None
     return r2
@@ -1028,7 +1026,7 @@ def A.__mypyc_defaults_setup(__mypyc_self__):
     r0 :: short_int
     r1, r2 :: bool
 L0:
-    r0 = 10
+    r0 = 20
     __mypyc_self__.x = r0; r1 = is_error
     r2 = True
     return r2
@@ -1045,11 +1043,11 @@ def B.__mypyc_defaults_setup(__mypyc_self__):
     r8 :: object
     r9, r10, r11, r12 :: bool
 L0:
-    r0 = 10
+    r0 = 20
     __mypyc_self__.x = r0; r1 = is_error
     r2 = __main__.globals :: static
     r3 = unicode_9 :: static  ('LOL')
-    r4 = r2[r3] :: dict
+    r4 = CPyDict_GetItem(r2, r3)
     r5 = cast(str, r4)
     __mypyc_self__.y = r5; r6 = is_error
     r7 = None
@@ -1070,10 +1068,10 @@ def foo(x: WelpDict) -> None:
 [out]
 def foo(x):
     x :: dict
-    r0 :: bool
+    r0 :: int32
     r1, r2 :: None
 L0:
-    r0 = x.update(x) :: dict
+    r0 = CPyDict_Update(x, x)
     r1 = None
     r2 = None
     return r2

@@ -25,7 +25,7 @@ from typing import Optional, Union, List, Dict, Generic, TypeVar
 
 from typing_extensions import Final, ClassVar, TYPE_CHECKING
 
-from mypyc.common import JsonDict, short_name
+from mypyc.common import JsonDict, short_name, IS_32_BIT_PLATFORM
 from mypyc.namegen import NameGenerator
 
 if TYPE_CHECKING:
@@ -174,7 +174,9 @@ class RPrimitive(RType):
         self.is_unboxed = is_unboxed
         self._ctype = ctype
         self.is_refcounted = is_refcounted
-        if ctype == 'CPyTagged':
+        # TODO: For low-level integers, they actually don't have undefined values
+        #       we need to figure out some way to represent here.
+        if ctype in ('CPyTagged', 'int32_t', 'int64_t'):
             self.c_undefined = 'CPY_INT_TAG'
         elif ctype == 'PyObject *':
             # Boxed types use the null pointer as the error value.
@@ -234,6 +236,18 @@ int_rprimitive = RPrimitive('builtins.int', is_unboxed=True, is_refcounted=True,
 short_int_rprimitive = RPrimitive('short_int', is_unboxed=True, is_refcounted=False,
                                   ctype='CPyTagged')  # type: Final
 
+# low level integer (corresponds to C's 'int's).
+int32_rprimitive = RPrimitive('int32', is_unboxed=True, is_refcounted=False,
+                              ctype='int32_t')  # type: Final
+int64_rprimitive = RPrimitive('int64', is_unboxed=True, is_refcounted=False,
+                              ctype='int64_t')  # type: Final
+# integer alias
+c_int_rprimitive = int32_rprimitive
+if IS_32_BIT_PLATFORM:
+    c_pyssize_t_rprimitive = int32_rprimitive
+else:
+    c_pyssize_t_rprimitive = int64_rprimitive
+
 # Floats are represent as 'float' PyObject * values. (In the future
 # we'll likely switch to a more efficient, unboxed representation.)
 float_rprimitive = RPrimitive('builtins.float', is_unboxed=False,
@@ -273,6 +287,14 @@ def is_int_rprimitive(rtype: RType) -> bool:
 
 def is_short_int_rprimitive(rtype: RType) -> bool:
     return rtype is short_int_rprimitive
+
+
+def is_int32_rprimitive(rtype: RType) -> bool:
+    return rtype is int32_rprimitive
+
+
+def is_int64_rprimitive(rtype: RType) -> bool:
+    return rtype is int64_rprimitive
 
 
 def is_float_rprimitive(rtype: RType) -> bool:
@@ -398,6 +420,16 @@ class RTuple(RType):
 
 # Exception tuple: (exception class, exception instance, traceback object)
 exc_rtuple = RTuple([object_rprimitive, object_rprimitive, object_rprimitive])
+
+# Dictionary iterator tuple: (should continue, internal offset, key, value)
+# See mypyc.irbuild.for_helpers.ForDictionaryCommon for more details.
+dict_next_rtuple_pair = RTuple(
+    [bool_rprimitive, int_rprimitive, object_rprimitive, object_rprimitive]
+)
+# Same as above but just for key or value.
+dict_next_rtuple_single = RTuple(
+    [bool_rprimitive, int_rprimitive, object_rprimitive]
+)
 
 
 class RInstance(RType):

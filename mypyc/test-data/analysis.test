@@ -13,38 +13,62 @@ def f(a):
     r0 :: short_int
     x :: int
     r1 :: bool
-    r2 :: short_int
+    r2, r3, r4 :: native_int
+    r5, r6, r7 :: bool
+    r8 :: short_int
     y :: int
-    r3 :: short_int
+    r9 :: short_int
     z :: int
-    r4 :: None
+    r10 :: None
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = x == a :: int
-    if r1 goto L1 else goto L2 :: bool
-L1:
     r2 = 1
-    y = r2
+    r3 = x & r2
+    r4 = 0
+    r5 = r3 == r4
+    if r5 goto L1 else goto L2 :: bool
+L1:
+    r6 = x == a
+    r1 = r6
     goto L3
 L2:
-    r3 = 1
-    z = r3
+    r7 = CPyTagged_IsEq_(x, a)
+    r1 = r7
 L3:
-    r4 = None
-    return r4
+    if r1 goto L4 else goto L5 :: bool
+L4:
+    r8 = 2
+    y = r8
+    goto L6
+L5:
+    r9 = 2
+    z = r9
+L6:
+    r10 = None
+    return r10
 (0, 0)   {a}                     {a}
 (0, 1)   {a}                     {a, x}
 (0, 2)   {a, x}                  {a, x}
 (0, 3)   {a, x}                  {a, x}
+(0, 4)   {a, x}                  {a, x}
+(0, 5)   {a, x}                  {a, x}
+(0, 6)   {a, x}                  {a, x}
 (1, 0)   {a, x}                  {a, x}
-(1, 1)   {a, x}                  {a, x, y}
-(1, 2)   {a, x, y}               {a, x, y}
+(1, 1)   {a, x}                  {a, r1, x}
+(1, 2)   {a, r1, x}              {a, r1, x}
 (2, 0)   {a, x}                  {a, x}
-(2, 1)   {a, x}                  {a, x, z}
-(2, 2)   {a, x, z}               {a, x, z}
-(3, 0)   {a, x, y, z}            {a, x, y, z}
-(3, 1)   {a, x, y, z}            {a, x, y, z}
+(2, 1)   {a, x}                  {a, r1, x}
+(2, 2)   {a, r1, x}              {a, r1, x}
+(3, 0)   {a, r1, x}              {a, r1, x}
+(4, 0)   {a, r1, x}              {a, r1, x}
+(4, 1)   {a, r1, x}              {a, r1, x, y}
+(4, 2)   {a, r1, x, y}           {a, r1, x, y}
+(5, 0)   {a, r1, x}              {a, r1, x}
+(5, 1)   {a, r1, x}              {a, r1, x, z}
+(5, 2)   {a, r1, x, z}           {a, r1, x, z}
+(6, 0)   {a, r1, x, y, z}        {a, r1, x, y, z}
+(6, 1)   {a, r1, x, y, z}        {a, r1, x, y, z}
 
 [case testSimple_Liveness]
 def f(a: int) -> int:
@@ -61,10 +85,10 @@ def f(a):
     r1 :: short_int
     r2 :: bool
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 1
-    r2 = x == r1 :: int
+    r1 = 2
+    r2 = CPyTagged_IsEq(x, r1)
     if r2 goto L1 else goto L2 :: bool
 L1:
     return a
@@ -95,11 +119,11 @@ def f():
     y :: int
     r2 :: short_int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 1
+    r1 = 2
     y = r1
-    r2 = 2
+    r2 = 4
     x = r2
     return x
 (0, 0)   {}                      {r0}
@@ -121,11 +145,11 @@ def f(a):
     a :: int
     r0, r1, r2 :: short_int
 L0:
-    r0 = 1
+    r0 = 2
     a = r0
-    r1 = 2
+    r1 = 4
     a = r1
-    r2 = 3
+    r2 = 6
     a = r2
     return a
 (0, 0)   {}                      {r0}
@@ -155,17 +179,17 @@ def f(a):
     r4 :: short_int
     r5 :: None
 L0:
-    r0 = 1
-    r1 = a == r0 :: int
+    r0 = 2
+    r1 = CPyTagged_IsEq(a, r0)
     if r1 goto L1 else goto L2 :: bool
 L1:
-    r2 = 1
+    r2 = 2
     y = r2
-    r3 = 2
+    r3 = 4
     x = r3
     goto L3
 L2:
-    r4 = 2
+    r4 = 4
     x = r4
 L3:
     r5 = None
@@ -209,12 +233,12 @@ def f(n):
     r4 :: None
 L0:
 L1:
-    r0 = 5
-    r1 = n < r0 :: int
+    r0 = 10
+    r1 = CPyTagged_IsLt(n, r0)
     if r1 goto L2 else goto L3 :: bool
 L2:
-    r2 = 1
-    r3 = n + r2 :: int
+    r2 = 2
+    r3 = CPyTagged_Add(n, r2)
     n = r3
     m = n
     goto L1
@@ -256,22 +280,22 @@ def f(n):
     r6 :: short_int
     r7 :: None
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 1
+    r1 = 2
     y = r1
 L1:
-    r2 = 1
-    r3 = n < r2 :: int
+    r2 = 2
+    r3 = CPyTagged_IsLt(n, r2)
     if r3 goto L2 else goto L6 :: bool
 L2:
     n = y
 L3:
-    r4 = 2
-    r5 = n < r4 :: int
+    r4 = 4
+    r5 = CPyTagged_IsLt(n, r4)
     if r5 goto L4 else goto L5 :: bool
 L4:
-    r6 = 1
+    r6 = 2
     n = r6
     n = x
     goto L3
@@ -311,7 +335,7 @@ def f(x):
     r0 :: short_int
     r1, a, r2, r3, r4 :: int
 L0:
-    r0 = 1
+    r0 = 2
     r1 = f(r0)
     if is_error(r1) goto L3 (error at f:2) else goto L1
 L1:
@@ -319,7 +343,7 @@ L1:
     r2 = f(a)
     if is_error(r2) goto L3 (error at f:3) else goto L2
 L2:
-    r3 = r2 + a :: int
+    r3 = CPyTagged_Add(r2, a)
     return r3
 L3:
     r4 = <error> :: int
@@ -344,38 +368,110 @@ def f(a: int) -> None:
 [out]
 def f(a):
     a :: int
-    r0, r1 :: bool
+    r0 :: bool
+    r1, r2, r3 :: native_int
+    r4 :: bool
+    r5, r6, r7 :: native_int
+    r8, r9, r10, r11, r12 :: bool
+    r13, r14, r15 :: native_int
+    r16 :: bool
+    r17, r18, r19 :: native_int
+    r20, r21, r22, r23 :: bool
     y, x :: int
-    r2 :: None
+    r24 :: None
 L0:
 L1:
-    r0 = a < a :: int
-    if r0 goto L2 else goto L6 :: bool
+    r1 = 1
+    r2 = a & r1
+    r3 = 0
+    r4 = r2 == r3
+    r5 = 1
+    r6 = a & r5
+    r7 = 0
+    r8 = r6 == r7
+    r9 = r4 & r8
+    if r9 goto L2 else goto L3 :: bool
 L2:
+    r10 = a < a
+    r0 = r10
+    goto L4
 L3:
-    r1 = a < a :: int
-    if r1 goto L4 else goto L5 :: bool
+    r11 = CPyTagged_IsLt_(a, a)
+    r0 = r11
 L4:
-    y = a
-    goto L3
+    if r0 goto L5 else goto L12 :: bool
 L5:
+L6:
+    r13 = 1
+    r14 = a & r13
+    r15 = 0
+    r16 = r14 == r15
+    r17 = 1
+    r18 = a & r17
+    r19 = 0
+    r20 = r18 == r19
+    r21 = r16 & r20
+    if r21 goto L7 else goto L8 :: bool
+L7:
+    r22 = a < a
+    r12 = r22
+    goto L9
+L8:
+    r23 = CPyTagged_IsLt_(a, a)
+    r12 = r23
+L9:
+    if r12 goto L10 else goto L11 :: bool
+L10:
+    y = a
+    goto L6
+L11:
     x = a
     goto L1
-L6:
-    r2 = None
-    return r2
+L12:
+    r24 = None
+    return r24
 (0, 0)   {a}                     {a}
-(1, 0)   {a, x, y}               {a, x, y}
-(1, 1)   {a, x, y}               {a, x, y}
-(2, 0)   {a, x, y}               {a, x, y}
-(3, 0)   {a, x, y}               {a, x, y}
-(3, 1)   {a, x, y}               {a, x, y}
-(4, 0)   {a, x, y}               {a, x, y}
-(4, 1)   {a, x, y}               {a, x, y}
-(5, 0)   {a, x, y}               {a, x, y}
-(5, 1)   {a, x, y}               {a, x, y}
-(6, 0)   {a, x, y}               {a, x, y}
-(6, 1)   {a, x, y}               {a, x, y}
+(1, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 3)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 4)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 5)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 6)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 7)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 8)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(1, 9)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(2, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(2, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(2, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(3, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(3, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(3, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(4, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(5, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 3)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 4)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 5)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 6)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 7)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 8)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(6, 9)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(7, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(7, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(7, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(8, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(8, 1)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(8, 2)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(9, 0)   {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(10, 0)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(10, 1)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(11, 0)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(11, 1)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(12, 0)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
+(12, 1)  {a, r0, r12, x, y}      {a, r0, r12, x, y}
 
 [case testTrivial_BorrowedArgument]
 def f(a: int, b: int) -> int:
@@ -398,7 +494,7 @@ def f(a):
     r0 :: short_int
 L0:
     b = a
-    r0 = 1
+    r0 = 2
     a = r0
     return a
 (0, 0)   {a}                     {a}
@@ -418,34 +514,58 @@ def f(a: int) -> int:
 def f(a):
     a :: int
     r0 :: bool
-    r1 :: short_int
+    r1, r2, r3 :: native_int
+    r4, r5, r6 :: bool
+    r7 :: short_int
     x :: int
-    r2, r3 :: short_int
+    r8, r9 :: short_int
 L0:
-    r0 = a == a :: int
-    if r0 goto L1 else goto L2 :: bool
+    r1 = 1
+    r2 = a & r1
+    r3 = 0
+    r4 = r2 == r3
+    if r4 goto L1 else goto L2 :: bool
 L1:
-    r1 = 2
-    x = r1
-    r2 = 1
-    a = r2
+    r5 = a == a
+    r0 = r5
     goto L3
 L2:
-    r3 = 1
-    x = r3
+    r6 = CPyTagged_IsEq_(a, a)
+    r0 = r6
 L3:
+    if r0 goto L4 else goto L5 :: bool
+L4:
+    r7 = 4
+    x = r7
+    r8 = 2
+    a = r8
+    goto L6
+L5:
+    r9 = 2
+    x = r9
+L6:
     return x
 (0, 0)   {a}                     {a}
 (0, 1)   {a}                     {a}
+(0, 2)   {a}                     {a}
+(0, 3)   {a}                     {a}
+(0, 4)   {a}                     {a}
 (1, 0)   {a}                     {a}
 (1, 1)   {a}                     {a}
 (1, 2)   {a}                     {a}
-(1, 3)   {a}                     {}
-(1, 4)   {}                      {}
 (2, 0)   {a}                     {a}
 (2, 1)   {a}                     {a}
 (2, 2)   {a}                     {a}
-(3, 0)   {}                      {}
+(3, 0)   {a}                     {a}
+(4, 0)   {a}                     {a}
+(4, 1)   {a}                     {a}
+(4, 2)   {a}                     {a}
+(4, 3)   {a}                     {}
+(4, 4)   {}                      {}
+(5, 0)   {a}                     {a}
+(5, 1)   {a}                     {a}
+(5, 2)   {a}                     {a}
+(6, 0)   {}                      {}
 
 [case testLoop_BorrowedArgument]
 def f(a: int) -> int:
@@ -472,13 +592,13 @@ L0:
     r1 = 0
     i = r1
 L1:
-    r2 = i <= a :: int
+    r2 = CPyTagged_IsLe(i, a)
     if r2 goto L2 else goto L3 :: bool
 L2:
-    r3 = sum + i :: int
+    r3 = CPyTagged_Add(sum, i)
     sum = r3
-    r4 = 1
-    r5 = i + r4 :: int
+    r4 = 2
+    r5 = CPyTagged_Add(i, r4)
     i = r5
     goto L1
 L3:
@@ -520,49 +640,51 @@ def lol(x):
     r5 :: bool
     r6 :: short_int
     r7 :: int
-    r8, r9 :: bool
-    r10 :: short_int
-    r11, r12 :: int
+    r8 :: bool
+    r9 :: short_int
+    r10, r11 :: int
+    r12 :: bool
 L0:
 L1:
-    r0 = id x :: object
+    r0 = CPyTagged_Id(x)
     st = r0
     goto L10
 L2:
-    r1 = error_catch
+    r1 = CPy_CatchError()
     r2 = builtins :: module
     r3 = unicode_1 :: static  ('Exception')
     r4 = getattr r2, r3
     if is_error(r4) goto L8 (error at lol:4) else goto L3
 L3:
-    r5 = exc_matches r4
+    r5 = CPy_ExceptionMatches(r4)
     if r5 goto L4 else goto L5 :: bool
 L4:
-    r6 = 1
-    r7 = -r6 :: int
-    restore_exc_info r1
+    r6 = 2
+    r7 = CPyTagged_Negate(r6)
+    CPy_RestoreExcInfo(r1)
     return r7
 L5:
-    reraise_exc; r8 = 0
-    if not r8 goto L8 else goto L6 :: bool
+    CPy_Reraise()
+    r12 = 0
+    if not r12 goto L8 else goto L6 :: bool
 L6:
     unreachable
 L7:
-    restore_exc_info r1
+    CPy_RestoreExcInfo(r1)
     goto L10
 L8:
-    restore_exc_info r1
-    r9 = keep_propagating
-    if not r9 goto L11 else goto L9 :: bool
+    CPy_RestoreExcInfo(r1)
+    r8 = keep_propagating
+    if not r8 goto L11 else goto L9 :: bool
 L9:
     unreachable
 L10:
-    r10 = 1
-    r11 = st + r10 :: int
-    return r11
+    r9 = 2
+    r10 = CPyTagged_Add(st, r9)
+    return r10
 L11:
-    r12 = <error> :: int
-    return r12
+    r11 = <error> :: int
+    return r11
 (0, 0)   {x}                     {x}
 (1, 0)   {x}                     {r0}
 (1, 1)   {r0}                    {st}
@@ -578,18 +700,19 @@ L11:
 (4, 1)   {r1, r6}                {r1, r7}
 (4, 2)   {r1, r7}                {r7}
 (4, 3)   {r7}                    {}
-(5, 0)   {r1}                    {r1, r8}
-(5, 1)   {r1, r8}                {r1}
+(5, 0)   {r1}                    {r1}
+(5, 1)   {r1}                    {r1, r12}
+(5, 2)   {r1, r12}               {r1}
 (6, 0)   {}                      {}
 (7, 0)   {r1, st}                {st}
 (7, 1)   {st}                    {st}
 (8, 0)   {r1}                    {}
-(8, 1)   {}                      {r9}
-(8, 2)   {r9}                    {}
+(8, 1)   {}                      {r8}
+(8, 2)   {r8}                    {}
 (9, 0)   {}                      {}
-(10, 0)  {st}                    {r10, st}
-(10, 1)  {r10, st}               {r11}
-(10, 2)  {r11}                   {}
-(11, 0)  {}                      {r12}
-(11, 1)  {r12}                   {}
+(10, 0)  {st}                    {r9, st}
+(10, 1)  {r9, st}                {r10}
+(10, 2)  {r10}                   {}
+(11, 0)  {}                      {r11}
+(11, 1)  {r11}                   {}
 

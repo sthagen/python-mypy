@@ -279,7 +279,9 @@ class D:
     def f(self, x: int) -> int:
         return 0
 class E(D):
-    def f(self, x: str) -> int:  # E: Argument 1 of "f" is incompatible with supertype "D"; supertype defines the argument type as "int"  [override]
+    def f(self, x: str) -> int:  # E: Argument 1 of "f" is incompatible with supertype "D"; supertype defines the argument type as "int"  [override] \
+                                 # N: This violates the Liskov substitution principle \
+                                 # N: See https://mypy.readthedocs.io/en/stable/common_issues.html#incompatible-overrides
         return 0
 
 class O:
@@ -734,3 +736,38 @@ class C:
     def __rsub__(self, x): pass
 
 x - C()  # type: ignore[operator]
+
+[case testErrorCodeMultiLineBinaryOperatorOperand]
+# flags: --strict-optional
+from typing import Optional
+
+class C: pass
+
+def f() -> Optional[C]:
+    return None
+
+f(  # type: ignore[operator]
+) + C()
+
+[case testErrorCodeSpecialArgTypeErrors]
+from typing import TypedDict
+
+class C(TypedDict):
+    x: int
+
+c: C
+c.setdefault('x', '1')  # type: ignore[arg-type]
+
+class A:
+    pass
+
+class B(A):
+    def f(self) -> None:
+        super(1, self).foo()  # type: ignore[arg-type]
+
+def f(**x: int) -> None:
+    pass
+
+f(**1)  # type: ignore[arg-type]
+[builtins fixtures/dict.pyi]
+[typing fixtures/typing-typeddict.pyi]

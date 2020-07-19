@@ -1,7 +1,8 @@
 import os.path
 import sys
 import traceback
-from collections import OrderedDict, defaultdict
+from mypy.ordered_dict import OrderedDict
+from collections import defaultdict
 
 from typing import Tuple, List, TypeVar, Set, Dict, Optional, TextIO, Callable
 from typing_extensions import Final
@@ -403,6 +404,10 @@ class Errors:
     def is_errors_for_file(self, file: str) -> bool:
         """Are there any errors for the given file?"""
         return file in self.error_info_map
+
+    def most_recent_error_location(self) -> Tuple[int, int]:
+        info = self.error_info_map[self.file][-1]
+        return info.line, info.column
 
     def raise_error(self, use_stdout: bool = True) -> None:
         """Raise a CompileError with the generated messages.

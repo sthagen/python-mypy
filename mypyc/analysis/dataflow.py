@@ -8,7 +8,8 @@ from mypyc.ir.ops import (
     Value, ControlOp,
     BasicBlock, OpVisitor, Assign, LoadInt, LoadErrorValue, RegisterOp, Goto, Branch, Return, Call,
     Environment, Box, Unbox, Cast, Op, Unreachable, TupleGet, TupleSet, GetAttr, SetAttr,
-    LoadStatic, InitStatic, PrimitiveOp, MethodCall, RaiseStandardError,
+    LoadStatic, InitStatic, PrimitiveOp, MethodCall, RaiseStandardError, CallC, LoadGlobal,
+    Truncate, BinaryIntOp
 )
 
 
@@ -30,7 +31,7 @@ class CFG:
 
     def __str__(self) -> str:
         lines = []
-        lines.append('exits: %s' % sorted(self.exits))
+        lines.append('exits: %s' % sorted(self.exits, key=lambda e: e.label))
         lines.append('succ: %s' % self.succ)
         lines.append('pred: %s' % self.pred)
         return '\n'.join(lines)
@@ -193,6 +194,18 @@ class BaseAnalysisVisitor(OpVisitor[GenAndKill]):
         return self.visit_register_op(op)
 
     def visit_raise_standard_error(self, op: RaiseStandardError) -> GenAndKill:
+        return self.visit_register_op(op)
+
+    def visit_call_c(self, op: CallC) -> GenAndKill:
+        return self.visit_register_op(op)
+
+    def visit_truncate(self, op: Truncate) -> GenAndKill:
+        return self.visit_register_op(op)
+
+    def visit_load_global(self, op: LoadGlobal) -> GenAndKill:
+        return self.visit_register_op(op)
+
+    def visit_binary_int_op(self, op: BinaryIntOp) -> GenAndKill:
         return self.visit_register_op(op)
 
 

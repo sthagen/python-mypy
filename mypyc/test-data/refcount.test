@@ -7,7 +7,7 @@ def f() -> int:
 def f():
     r0 :: short_int
 L0:
-    r0 = 1
+    r0 = 2
     return r0
 
 [case testReturnLocal]
@@ -19,7 +19,7 @@ def f():
     r0 :: short_int
     x :: int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
     return x
 
@@ -34,7 +34,7 @@ def f():
     r0 :: short_int
     x, y :: int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
     y = x
     x = y
@@ -51,12 +51,12 @@ def f():
     r0 :: short_int
     x, y, z, r1 :: int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
     inc_ref x :: int
     y = x
     z = x
-    r1 = y + z :: int
+    r1 = CPyTagged_Add(y, z)
     dec_ref y :: int
     dec_ref z :: int
     return r1
@@ -77,12 +77,12 @@ def f():
     r2 :: short_int
     r3 :: bool
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 2
+    r1 = 4
     y = r1
-    r2 = 1
-    r3 = x == r2 :: int
+    r2 = 2
+    r3 = CPyTagged_IsEq(x, r2)
     if r3 goto L3 else goto L4 :: bool
 L1:
     return x
@@ -106,10 +106,10 @@ def f(a, b):
     r0 :: short_int
     r1, x, r2, y :: int
 L0:
-    r0 = 1
-    r1 = a + r0 :: int
+    r0 = 2
+    r1 = CPyTagged_Add(a, r0)
     x = r1
-    r2 = x + a :: int
+    r2 = CPyTagged_Add(x, a)
     dec_ref x :: int
     y = r2
     return y
@@ -131,9 +131,9 @@ L0:
     dec_ref x :: int
     inc_ref a :: int
     y = a
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = x + y :: int
+    r1 = CPyTagged_Add(x, y)
     dec_ref x :: int
     dec_ref y :: int
     return r1
@@ -149,7 +149,7 @@ def f(a):
     r0 :: short_int
     y :: int
 L0:
-    r0 = 1
+    r0 = 2
     a = r0
     y = a
     return y
@@ -165,13 +165,13 @@ def f(a):
     a :: int
     r0, r1, r2 :: short_int
 L0:
-    r0 = 1
+    r0 = 2
     a = r0
     dec_ref a :: int
-    r1 = 2
+    r1 = 4
     a = r1
     dec_ref a :: int
-    r2 = 3
+    r2 = 6
     a = r2
     return a
 
@@ -187,7 +187,7 @@ def f(a):
     r0 :: short_int
     x, y :: int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
     inc_ref x :: int
     a = x
@@ -217,31 +217,45 @@ def f(a: int) -> int:
 def f(a):
     a :: int
     r0 :: bool
-    r1, r2 :: short_int
+    r1, r2, r3 :: native_int
+    r4, r5, r6 :: bool
+    r7, r8 :: short_int
     x :: int
-    r3 :: short_int
-    r4, y :: int
+    r9 :: short_int
+    r10, y :: int
 L0:
-    r0 = a == a :: int
-    if r0 goto L1 else goto L2 :: bool
-L1:
     r1 = 1
-    a = r1
+    r2 = a & r1
+    r3 = 0
+    r4 = r2 == r3
+    if r4 goto L1 else goto L2 :: bool
+L1:
+    r5 = a == a
+    r0 = r5
     goto L3
 L2:
-    r2 = 2
-    x = r2
-    dec_ref x :: int
-    goto L4
+    r6 = CPyTagged_IsEq_(a, a)
+    r0 = r6
 L3:
-    r3 = 1
-    r4 = a + r3 :: int
-    dec_ref a :: int
-    y = r4
-    return y
+    if r0 goto L4 else goto L5 :: bool
 L4:
+    r7 = 2
+    a = r7
+    goto L6
+L5:
+    r8 = 4
+    x = r8
+    dec_ref x :: int
+    goto L7
+L6:
+    r9 = 2
+    r10 = CPyTagged_Add(a, r9)
+    dec_ref a :: int
+    y = r10
+    return y
+L7:
     inc_ref a :: int
-    goto L3
+    goto L6
 
 [case testConditionalAssignToArgument2]
 def f(a: int) -> int:
@@ -255,30 +269,44 @@ def f(a: int) -> int:
 def f(a):
     a :: int
     r0 :: bool
-    r1 :: short_int
+    r1, r2, r3 :: native_int
+    r4, r5, r6 :: bool
+    r7 :: short_int
     x :: int
-    r2, r3 :: short_int
-    r4, y :: int
+    r8, r9 :: short_int
+    r10, y :: int
 L0:
-    r0 = a == a :: int
-    if r0 goto L1 else goto L2 :: bool
+    r1 = 1
+    r2 = a & r1
+    r3 = 0
+    r4 = r2 == r3
+    if r4 goto L1 else goto L2 :: bool
 L1:
-    r1 = 2
-    x = r1
-    dec_ref x :: int
-    goto L4
-L2:
-    r2 = 1
-    a = r2
-L3:
-    r3 = 1
-    r4 = a + r3 :: int
-    dec_ref a :: int
-    y = r4
-    return y
-L4:
-    inc_ref a :: int
+    r5 = a == a
+    r0 = r5
     goto L3
+L2:
+    r6 = CPyTagged_IsEq_(a, a)
+    r0 = r6
+L3:
+    if r0 goto L4 else goto L5 :: bool
+L4:
+    r7 = 4
+    x = r7
+    dec_ref x :: int
+    goto L7
+L5:
+    r8 = 2
+    a = r8
+L6:
+    r9 = 2
+    r10 = CPyTagged_Add(a, r9)
+    dec_ref a :: int
+    y = r10
+    return y
+L7:
+    inc_ref a :: int
+    goto L6
 
 [case testConditionalAssignToArgument3]
 def f(a: int) -> int:
@@ -289,18 +317,32 @@ def f(a: int) -> int:
 def f(a):
     a :: int
     r0 :: bool
-    r1 :: short_int
+    r1, r2, r3 :: native_int
+    r4, r5, r6 :: bool
+    r7 :: short_int
 L0:
-    r0 = a == a :: int
-    if r0 goto L1 else goto L3 :: bool
-L1:
     r1 = 1
-    a = r1
+    r2 = a & r1
+    r3 = 0
+    r4 = r2 == r3
+    if r4 goto L1 else goto L2 :: bool
+L1:
+    r5 = a == a
+    r0 = r5
+    goto L3
 L2:
-    return a
+    r6 = CPyTagged_IsEq_(a, a)
+    r0 = r6
 L3:
+    if r0 goto L4 else goto L6 :: bool
+L4:
+    r7 = 2
+    a = r7
+L5:
+    return a
+L6:
     inc_ref a :: int
-    goto L2
+    goto L5
 
 [case testAssignRegisterToItself]
 def f(a: int) -> int:
@@ -317,12 +359,12 @@ def f(a):
 L0:
     inc_ref a :: int
     a = a
-    r0 = 1
+    r0 = 2
     x = r0
     inc_ref x :: int
     dec_ref x :: int
     x = x
-    r1 = x + a :: int
+    r1 = CPyTagged_Add(x, a)
     dec_ref x :: int
     dec_ref a :: int
     return r1
@@ -343,16 +385,16 @@ def f(a):
     r3 :: short_int
     r4, r5 :: int
 L0:
-    r0 = 1
-    r1 = a + r0 :: int
+    r0 = 2
+    r1 = CPyTagged_Add(a, r0)
     a = r1
-    r2 = 1
+    r2 = 2
     x = r2
-    r3 = 1
-    r4 = x + r3 :: int
+    r3 = 2
+    r4 = CPyTagged_Add(x, r3)
     dec_ref x :: int
     x = r4
-    r5 = a + x :: int
+    r5 = CPyTagged_Add(a, x)
     dec_ref a :: int
     dec_ref x :: int
     return r5
@@ -369,10 +411,10 @@ def f():
     r2 :: int
     r3 :: None
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 1
-    r2 = x + r1 :: int
+    r1 = 2
+    r2 = CPyTagged_Add(x, r1)
     dec_ref x :: int
     x = r2
     dec_ref x :: int
@@ -391,10 +433,10 @@ def f():
     r2, x :: int
     r3 :: None
 L0:
-    r0 = 1
+    r0 = 2
     y = r0
-    r1 = 1
-    r2 = y + r1 :: int
+    r1 = 2
+    r2 = CPyTagged_Add(y, r1)
     dec_ref y :: int
     x = r2
     dec_ref x :: int
@@ -411,10 +453,10 @@ def f(a: int) -> int:
 def f(a):
     a, r0, x, r1 :: int
 L0:
-    r0 = a + a :: int
+    r0 = CPyTagged_Add(a, a)
     a = r0
     x = a
-    r1 = x + x :: int
+    r1 = CPyTagged_Add(x, x)
     dec_ref x :: int
     x = r1
     return x
@@ -428,9 +470,9 @@ def f(a: int) -> int:
 def f(a):
     a, r0, x, r1, y :: int
 L0:
-    r0 = a + a :: int
+    r0 = CPyTagged_Add(a, a)
     x = r0
-    r1 = x + x :: int
+    r1 = CPyTagged_Add(x, x)
     dec_ref x :: int
     y = r1
     return y
@@ -447,12 +489,12 @@ def f(a):
     y, r2, z :: int
     r3 :: None
 L0:
-    r0 = a + a :: int
+    r0 = CPyTagged_Add(a, a)
     x = r0
     dec_ref x :: int
-    r1 = 1
+    r1 = 2
     y = r1
-    r2 = y + y :: int
+    r2 = CPyTagged_Add(y, y)
     dec_ref y :: int
     z = r2
     dec_ref z :: int
@@ -471,12 +513,12 @@ def f(a):
     x, r2 :: int
     r3 :: None
 L0:
-    r0 = a + a :: int
+    r0 = CPyTagged_Add(a, a)
     a = r0
     dec_ref a :: int
-    r1 = 1
+    r1 = 2
     x = r1
-    r2 = x + x :: int
+    r2 = CPyTagged_Add(x, x)
     dec_ref x :: int
     x = r2
     dec_ref x :: int
@@ -501,36 +543,50 @@ def f():
     r2 :: short_int
     z :: int
     r3 :: bool
-    r4 :: short_int
-    a, r5, r6 :: int
+    r4, r5, r6 :: native_int
+    r7, r8, r9 :: bool
+    r10 :: short_int
+    a, r11, r12 :: int
 L0:
-    r0 = 1
+    r0 = 2
     x = r0
-    r1 = 2
+    r1 = 4
     y = r1
-    r2 = 3
+    r2 = 6
     z = r2
-    r3 = z == z :: int
-    if r3 goto L3 else goto L4 :: bool
-L1:
-    return z
-L2:
     r4 = 1
-    a = r4
-    r5 = x + y :: int
-    dec_ref x :: int
-    dec_ref y :: int
-    r6 = r5 - a :: int
-    dec_ref r5 :: int
-    dec_ref a :: int
-    return r6
+    r5 = z & r4
+    r6 = 0
+    r7 = r5 == r6
+    if r7 goto L1 else goto L2 :: bool
+L1:
+    r8 = z == z
+    r3 = r8
+    goto L3
+L2:
+    r9 = CPyTagged_IsEq_(z, z)
+    r3 = r9
 L3:
+    if r3 goto L6 else goto L7 :: bool
+L4:
+    return z
+L5:
+    r10 = 2
+    a = r10
+    r11 = CPyTagged_Add(x, y)
     dec_ref x :: int
     dec_ref y :: int
-    goto L1
-L4:
+    r12 = CPyTagged_Subtract(r11, a)
+    dec_ref r11 :: int
+    dec_ref a :: int
+    return r12
+L6:
+    dec_ref x :: int
+    dec_ref y :: int
+    goto L4
+L7:
     dec_ref z :: int
-    goto L2
+    goto L5
 
 [case testLoop]
 def f(a: int) -> int:
@@ -557,14 +613,14 @@ L0:
     r1 = 0
     i = r1
 L1:
-    r2 = i <= a :: int
+    r2 = CPyTagged_IsLe(i, a)
     if r2 goto L2 else goto L4 :: bool
 L2:
-    r3 = sum + i :: int
+    r3 = CPyTagged_Add(sum, i)
     dec_ref sum :: int
     sum = r3
-    r4 = 1
-    r5 = i + r4 :: int
+    r4 = 2
+    r5 = CPyTagged_Add(i, r4)
     dec_ref i :: int
     i = r5
     goto L1
@@ -583,8 +639,8 @@ def f(a):
     r0 :: short_int
     r1, r2 :: int
 L0:
-    r0 = 1
-    r1 = a + r0 :: int
+    r0 = 2
+    r1 = CPyTagged_Add(a, r0)
     r2 = f(r1)
     dec_ref r1 :: int
     return r2
@@ -605,7 +661,7 @@ def f():
     r5 :: short_int
 L0:
     r0 = 0
-    r1 = 1
+    r1 = 2
     r2 = box(short_int, r0)
     r3 = box(short_int, r1)
     r4 = [r2, r3]
@@ -630,12 +686,12 @@ def f(a, b):
     r6 :: None
 L0:
     r0 = 0
-    r1 = b[r0] :: list
+    r1 = CPyList_GetItemShort(b, r0)
     r2 = unbox(int, r1)
     dec_ref r1
     r3 = 0
     r4 = box(int, r2)
-    r5 = a.__setitem__(r3, r4) :: list
+    r5 = CPyList_SetItem(a, r3, r4)
     r6 = None
     return r6
 
@@ -693,7 +749,7 @@ L0:
     r1 = [r0]
     a = r1
     r2 = 0
-    r3 = a[r2] :: list
+    r3 = CPyList_GetItemShort(a, r2)
     dec_ref a
     r4 = cast(__main__.C, r3)
     d = r4
@@ -713,10 +769,10 @@ def f(x):
 L0:
     if x goto L1 else goto L2 :: bool
 L1:
-    r0 = 1
+    r0 = 2
     return r0
 L2:
-    r1 = 2
+    r1 = 4
     return r1
 
 [case testUnicodeLiteral]
@@ -740,24 +796,26 @@ def g(x):
     r1 :: object
     r2 :: str
     r3 :: tuple
-    r4 :: object
-    r5 :: dict
-    r6 :: object
-    r7 :: int
+    r4 :: native_int
+    r5 :: object
+    r6 :: dict
+    r7 :: object
+    r8 :: int
 L0:
-    r0 = 2
+    r0 = 4
     r1 = int
     r2 = unicode_1 :: static  ('base')
     r3 = (x) :: tuple
-    r4 = box(short_int, r0)
-    r5 = {r2: r4}
-    dec_ref r4
-    r6 = py_call_with_kwargs(r1, r3, r5)
-    dec_ref r3
+    r4 = 1
+    r5 = box(short_int, r0)
+    r6 = CPyDict_Build(r4, r2, r5)
     dec_ref r5
-    r7 = unbox(int, r6)
+    r7 = py_call_with_kwargs(r1, r3, r6)
+    dec_ref r3
     dec_ref r6
-    return r7
+    r8 = unbox(int, r7)
+    dec_ref r7
+    return r8
 
 [case testListAppend]
 from typing import List
@@ -768,12 +826,12 @@ def f(a, x):
     a :: list
     x :: int
     r0 :: object
-    r1 :: bool
+    r1 :: int32
     r2, r3 :: None
 L0:
     inc_ref x :: int
     r0 = box(int, x)
-    r1 = a.append(r0) :: list
+    r1 = PyList_Append(a, r0)
     dec_ref r0
     r2 = None
     r3 = None
@@ -788,36 +846,54 @@ def f(d: Dict[int, int]) -> None:
 [out]
 def f(d):
     d :: dict
-    r0, r1 :: object
-    r2, key :: int
-    r3, r4 :: object
+    r0, r1 :: short_int
+    r2 :: int
+    r3 :: object
+    r4 :: tuple[bool, int, object]
     r5 :: int
     r6 :: bool
-    r7 :: None
+    r7 :: object
+    key, r8 :: int
+    r9, r10 :: object
+    r11 :: int
+    r12, r13 :: bool
+    r14 :: None
 L0:
-    r0 = iter d :: object
+    r0 = 0
+    r1 = r0
+    r2 = len d :: dict
+    r3 = CPyDict_GetKeysIter(d)
 L1:
-    r1 = next r0 :: object
-    if is_error(r1) goto L5 else goto L2
+    r4 = CPyDict_NextKey(r3, r1)
+    r5 = r4[1]
+    r1 = r5
+    r6 = r4[0]
+    if r6 goto L2 else goto L6 :: bool
 L2:
-    r2 = unbox(int, r1)
-    dec_ref r1
-    key = r2
-    r3 = box(int, key)
-    r4 = d[r3] :: dict
-    dec_ref r3
-    r5 = unbox(int, r4)
+    r7 = r4[2]
     dec_ref r4
-    dec_ref r5 :: int
-    goto L1
+    r8 = unbox(int, r7)
+    dec_ref r7
+    key = r8
+    r9 = box(int, key)
+    r10 = CPyDict_GetItem(d, r9)
+    dec_ref r9
+    r11 = unbox(int, r10)
+    dec_ref r10
+    dec_ref r11 :: int
 L3:
-    r6 = no_err_occurred
+    r12 = CPyDict_CheckSize(d, r2)
+    goto L1
 L4:
-    r7 = None
-    return r7
+    r13 = CPy_NoErrOccured()
 L5:
-    dec_ref r0
-    goto L3
+    r14 = None
+    return r14
+L6:
+    dec_ref r2 :: int
+    dec_ref r3
+    dec_ref r4
+    goto L4
 
 [case testBorrowRefs]
 def make_garbage(arg: object) -> None:

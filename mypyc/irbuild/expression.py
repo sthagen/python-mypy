@@ -18,15 +18,16 @@ from mypy.types import TupleType, get_proper_type
 from mypyc.ir.ops import (
     Value, TupleGet, TupleSet, PrimitiveOp, BasicBlock, OpDescription, Assign
 )
-from mypyc.ir.rtypes import RTuple, object_rprimitive, is_none_rprimitive
+from mypyc.ir.rtypes import RTuple, object_rprimitive, is_none_rprimitive, is_int_rprimitive
 from mypyc.ir.func_ir import FUNC_CLASSMETHOD, FUNC_STATICMETHOD
-from mypyc.primitives.registry import name_ref_ops
+from mypyc.primitives.registry import name_ref_ops, CFunctionDescription
 from mypyc.primitives.generic_ops import iter_op
 from mypyc.primitives.misc_ops import new_slice_op, ellipsis_op, type_op
 from mypyc.primitives.list_ops import new_list_op, list_append_op, list_extend_op
 from mypyc.primitives.tuple_ops import list_tuple_op
-from mypyc.primitives.dict_ops import new_dict_op, dict_set_item_op
+from mypyc.primitives.dict_ops import dict_new_op, dict_set_item_op
 from mypyc.primitives.set_ops import new_set_op, set_add_op, set_update_op
+from mypyc.primitives.int_ops import int_logical_op_mapping
 from mypyc.irbuild.specialize import specializers
 from mypyc.irbuild.builder import IRBuilder
 from mypyc.irbuild.for_helpers import translate_list_comprehension, comprehension_helper
@@ -241,8 +242,28 @@ def translate_method_call(builder: IRBuilder, expr: CallExpr, callee: MemberExpr
 
 
 def translate_super_method_call(builder: IRBuilder, expr: CallExpr, callee: SuperExpr) -> Value:
-    if callee.info is None or callee.call.args:
+    if callee.info is None or (len(callee.call.args) != 0 and len(callee.call.args) != 2):
         return translate_call(builder, expr, callee)
+
+    # We support two-argument super but only when it is super(CurrentClass, self)
+    # TODO: We could support it when it is a parent class in many cases?
+    if len(callee.call.args) == 2:
+        self_arg = callee.call.args[1]
+        if (
+            not isinstance(self_arg, NameExpr)
+            or not isinstance(self_arg.node, Var)
+            or not self_arg.node.is_self
+        ):
+            return translate_call(builder, expr, callee)
+
+        typ_arg = callee.call.args[0]
+        if (
+            not isinstance(typ_arg, NameExpr)
+            or not isinstance(typ_arg.node, TypeInfo)
+            or callee.info is not typ_arg.node
+        ):
+            return translate_call(builder, expr, callee)
+
     ir = builder.mapper.type_to_ir[callee.info]
     # Search for the method in the mro, skipping ourselves.
     for base in ir.mro[1:]:
@@ -362,6 +383,9 @@ def transform_basic_comparison(builder: IRBuilder,
                                left: Value,
                                right: Value,
                                line: int) -> Value:
+    if (is_int_rprimitive(left.type) and is_int_rprimitive(right.type)
+            and op in int_logical_op_mapping.keys()):
+        return builder.compare_tagged(left, right, op, line)
     negate = False
     if op == 'is not':
         op, negate = 'is', True
@@ -443,7 +467,7 @@ def transform_tuple_expr(builder: IRBuilder, expr: TupleExpr) -> Value:
 def _visit_tuple_display(builder: IRBuilder, expr: TupleExpr) -> Value:
     """Create a list, then turn it into a tuple."""
     val_as_list = _visit_list_display(builder, expr.items, expr.line)
-    return builder.primitive_op(list_tuple_op, [val_as_list], expr.line)
+    return builder.call_c(list_tuple_op, [val_as_list], expr.line)
 
 
 def transform_dict_expr(builder: IRBuilder, expr: DictExpr) -> Value:
@@ -471,8 +495,8 @@ def transform_set_expr(builder: IRBuilder, expr: SetExpr) -> Value:
 def _visit_display(builder: IRBuilder,
                    items: List[Expression],
                    constructor_op: OpDescription,
-                   append_op: OpDescription,
-                   extend_op: OpDescription,
+                   append_op: CFunctionDescription,
+                   extend_op: CFunctionDescription,
                    line: int
                    ) -> Value:
     accepted_items = []
@@ -492,7 +516,7 @@ def _visit_display(builder: IRBuilder,
         if result is None:
             result = builder.primitive_op(constructor_op, initial_items, line)
 
-        builder.primitive_op(extend_op if starred else append_op, [result, value], line)
+        builder.call_c(extend_op if starred else append_op, [result, value], line)
 
     if result is None:
         result = builder.primitive_op(constructor_op, initial_items, line)
@@ -514,20 +538,20 @@ def transform_set_comprehension(builder: IRBuilder, o: SetComprehension) -> Valu
 
     def gen_inner_stmts() -> None:
         e = builder.accept(gen.left_expr)
-        builder.primitive_op(set_add_op, [set_ops, e], o.line)
+        builder.call_c(set_add_op, [set_ops, e], o.line)
 
     comprehension_helper(builder, loop_params, gen_inner_stmts, o.line)
     return set_ops
 
 
 def transform_dictionary_comprehension(builder: IRBuilder, o: DictionaryComprehension) -> Value:
-    d = builder.primitive_op(new_dict_op, [], o.line)
+    d = builder.call_c(dict_new_op, [], o.line)
     loop_params = list(zip(o.indices, o.sequences, o.condlists))
 
     def gen_inner_stmts() -> None:
         k = builder.accept(o.key)
         v = builder.accept(o.value)
-        builder.primitive_op(dict_set_item_op, [d, k, v], o.line)
+        builder.call_c(dict_set_item_op, [d, k, v], o.line)
 
     comprehension_helper(builder, loop_params, gen_inner_stmts, o.line)
     return d

@@ -136,7 +136,10 @@ class dict(Mapping[K, V]):
     @overload
     def update(self, **kwargs: V) -> None: ...
     def pop(self, x: int) -> K: pass
-    def keys(self) -> List[K]: pass
+    def keys(self) -> Iterable[K]: pass
+    def values(self) -> Iterable[V]: pass
+    def items(self) -> Iterable[Tuple[K, V]]: pass
+    def clear(self) -> None: pass
 
 class set(Generic[T]):
     def __init__(self, i: Optional[Iterable[T]] = None) -> None: pass
@@ -178,7 +181,11 @@ class UserWarning(Warning): pass
 
 class TypeError(Exception): pass
 
+class ValueError(Exception): pass
+
 class AttributeError(Exception): pass
+
+class NameError(Exception): pass
 
 class LookupError(Exception): pass
 

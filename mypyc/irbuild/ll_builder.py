@@ -19,30 +19,40 @@ from mypy.checkexpr import map_actuals_to_formals
 from mypyc.ir.ops import (
     BasicBlock, Environment, Op, LoadInt, Value, Register,
     Assign, Branch, Goto, Call, Box, Unbox, Cast, GetAttr,
-    LoadStatic, MethodCall, PrimitiveOp, OpDescription, RegisterOp,
-    NAMESPACE_TYPE, NAMESPACE_MODULE, LoadErrorValue,
+    LoadStatic, MethodCall, PrimitiveOp, OpDescription, RegisterOp, CallC, Truncate,
+    RaiseStandardError, Unreachable, LoadErrorValue, LoadGlobal,
+    NAMESPACE_TYPE, NAMESPACE_MODULE, NAMESPACE_STATIC, BinaryIntOp
 )
 from mypyc.ir.rtypes import (
     RType, RUnion, RInstance, optional_value_type, int_rprimitive, float_rprimitive,
-    bool_rprimitive, list_rprimitive, str_rprimitive, is_none_rprimitive, object_rprimitive
+    bool_rprimitive, list_rprimitive, str_rprimitive, is_none_rprimitive, object_rprimitive,
+    c_pyssize_t_rprimitive, is_short_int_rprimitive
 )
 from mypyc.ir.func_ir import FuncDecl, FuncSignature
 from mypyc.ir.class_ir import ClassIR, all_concrete_classes
 from mypyc.common import (
     FAST_ISINSTANCE_MAX_SUBCLASSES, MAX_LITERAL_SHORT_INT,
+    STATIC_PREFIX
 )
-from mypyc.primitives.registry import binary_ops, unary_ops, method_ops, func_ops
+from mypyc.primitives.registry import (
+    binary_ops, unary_ops, method_ops, func_ops,
+    c_method_call_ops, CFunctionDescription, c_function_ops,
+    c_binary_ops, c_unary_ops
+)
 from mypyc.primitives.list_ops import (
     list_extend_op, list_len_op, new_list_op
 )
 from mypyc.primitives.tuple_ops import list_tuple_op, new_tuple_op
-from mypyc.primitives.dict_ops import new_dict_op, dict_update_in_display_op
+from mypyc.primitives.dict_ops import (
+    dict_update_in_display_op, dict_new_op, dict_build_op
+)
 from mypyc.primitives.generic_ops import (
     py_getattr_op, py_call_op, py_call_with_kwargs_op, py_method_call_op
 )
 from mypyc.primitives.misc_ops import (
     none_op, none_object_op, false_op, fast_isinstance_op, bool_op, type_is_op
 )
+from mypyc.primitives.int_ops import int_logical_op_mapping
 from mypyc.rt_subtype import is_runtime_subtype
 from mypyc.subtype import is_subtype
 from mypyc.sametype import is_same_type
@@ -260,8 +270,8 @@ class LowLevelIRBuilder:
             # don't have an extend method.
             pos_args_list = self.primitive_op(new_list_op, pos_arg_values, line)
             for star_arg_value in star_arg_values:
-                self.primitive_op(list_extend_op, [pos_args_list, star_arg_value], line)
-            pos_args_tuple = self.primitive_op(list_tuple_op, [pos_args_list], line)
+                self.call_c(list_extend_op, [pos_args_list, star_arg_value], line)
+            pos_args_tuple = self.call_c(list_tuple_op, [pos_args_list], line)
 
         kw_args_dict = self.make_dict(kw_arg_key_value_pairs, line)
 
@@ -419,30 +429,30 @@ class LowLevelIRBuilder:
         return self.add(PrimitiveOp([], none_object_op, line=-1))
 
     def literal_static_name(self, value: Union[int, float, complex, str, bytes]) -> str:
-        return self.mapper.literal_static_name(self.current_module, value)
+        return STATIC_PREFIX + self.mapper.literal_static_name(self.current_module, value)
 
     def load_static_int(self, value: int) -> Value:
         """Loads a static integer Python 'int' object into a register."""
         if abs(value) > MAX_LITERAL_SHORT_INT:
-            static_symbol = self.literal_static_name(value)
-            return self.add(LoadStatic(int_rprimitive, static_symbol, ann=value))
+            identifier = self.literal_static_name(value)
+            return self.add(LoadGlobal(int_rprimitive, identifier, ann=value))
         else:
             return self.add(LoadInt(value))
 
     def load_static_float(self, value: float) -> Value:
         """Loads a static float value into a register."""
-        static_symbol = self.literal_static_name(value)
-        return self.add(LoadStatic(float_rprimitive, static_symbol, ann=value))
+        identifier = self.literal_static_name(value)
+        return self.add(LoadGlobal(float_rprimitive, identifier, ann=value))
 
     def load_static_bytes(self, value: bytes) -> Value:
         """Loads a static bytes value into a register."""
-        static_symbol = self.literal_static_name(value)
-        return self.add(LoadStatic(object_rprimitive, static_symbol, ann=value))
+        identifier = self.literal_static_name(value)
+        return self.add(LoadGlobal(object_rprimitive, identifier, ann=value))
 
     def load_static_complex(self, value: complex) -> Value:
         """Loads a static complex value into a register."""
-        static_symbol = self.literal_static_name(value)
-        return self.add(LoadStatic(object_rprimitive, static_symbol, ann=value))
+        identifier = self.literal_static_name(value)
+        return self.add(LoadGlobal(object_rprimitive, identifier, ann=value))
 
     def load_static_unicode(self, value: str) -> Value:
         """Loads a static unicode value into a register.
@@ -450,8 +460,25 @@ class LowLevelIRBuilder:
         This is useful for more than just unicode literals; for example, method calls
         also require a PyObject * form for the name of the method.
         """
-        static_symbol = self.literal_static_name(value)
-        return self.add(LoadStatic(str_rprimitive, static_symbol, ann=value))
+        identifier = self.literal_static_name(value)
+        return self.add(LoadGlobal(str_rprimitive, identifier, ann=value))
+
+    def load_static_checked(self, typ: RType, identifier: str, module_name: Optional[str] = None,
+                            namespace: str = NAMESPACE_STATIC,
+                            line: int = -1,
+                            error_msg: Optional[str] = None) -> Value:
+        if error_msg is None:
+            error_msg = "name '{}' is not defined".format(identifier)
+        ok_block, error_block = BasicBlock(), BasicBlock()
+        value = self.add(LoadStatic(typ, identifier, module_name, namespace, line=line))
+        self.add(Branch(value, error_block, ok_block, Branch.IS_ERROR, rare=True))
+        self.activate_block(error_block)
+        self.add(RaiseStandardError(RaiseStandardError.NAME_ERROR,
+                                    error_msg,
+                                    line))
+        self.add(Unreachable())
+        self.activate_block(ok_block)
+        return value
 
     def load_module(self, name: str) -> Value:
         return self.add(LoadStatic(object_rprimitive, name, namespace=NAMESPACE_MODULE))
@@ -520,15 +547,73 @@ class LowLevelIRBuilder:
         if value is not None:
             return value
 
+        # generate fast binary logic ops on short ints
+        if (is_short_int_rprimitive(lreg.type) and is_short_int_rprimitive(rreg.type)
+                and expr_op in int_logical_op_mapping.keys()):
+            return self.binary_int_op(bool_rprimitive, lreg, rreg,
+                                      int_logical_op_mapping[expr_op][0], line)
+
+        call_c_ops_candidates = c_binary_ops.get(expr_op, [])
+        target = self.matching_call_c(call_c_ops_candidates, [lreg, rreg], line)
+        if target:
+            return target
         ops = binary_ops.get(expr_op, [])
         target = self.matching_primitive_op(ops, [lreg, rreg], line)
         assert target, 'Unsupported binary operation: %s' % expr_op
         return target
 
+    def check_tagged_short_int(self, val: Value, line: int) -> Value:
+        """Check if a tagged integer is a short integer"""
+        int_tag = self.add(LoadInt(1, line, rtype=c_pyssize_t_rprimitive))
+        bitwise_and = self.binary_int_op(c_pyssize_t_rprimitive, val,
+                                         int_tag, BinaryIntOp.AND, line)
+        zero = self.add(LoadInt(0, line, rtype=c_pyssize_t_rprimitive))
+        check = self.binary_int_op(bool_rprimitive, bitwise_and, zero, BinaryIntOp.EQ, line)
+        return check
+
+    def compare_tagged(self, lhs: Value, rhs: Value, op: str, line: int) -> Value:
+        """Compare two tagged integers using given op"""
+        op_type, c_func_desc, negate_result, swap_op = int_logical_op_mapping[op]
+        result = self.alloc_temp(bool_rprimitive)
+        short_int_block, int_block, out = BasicBlock(), BasicBlock(), BasicBlock()
+        check_lhs = self.check_tagged_short_int(lhs, line)
+        if op in ("==", "!="):
+            check = check_lhs
+        else:
+            # for non-equal logical ops(less than, greater than, etc.), need to check both side
+            check_rhs = self.check_tagged_short_int(rhs, line)
+            check = self.binary_int_op(bool_rprimitive, check_lhs,
+                                       check_rhs, BinaryIntOp.AND, line)
+        branch = Branch(check, short_int_block, int_block, Branch.BOOL_EXPR)
+        branch.negated = False
+        self.add(branch)
+        self.activate_block(short_int_block)
+        eq = self.binary_int_op(bool_rprimitive, lhs, rhs, op_type, line)
+        self.add(Assign(result, eq, line))
+        self.goto(out)
+        self.activate_block(int_block)
+        if swap_op:
+            args = [rhs, lhs]
+        else:
+            args = [lhs, rhs]
+        call = self.call_c(c_func_desc, args, line)
+        if negate_result:
+            # TODO: introduce UnaryIntOp?
+            call_result = self.unary_op(call, "not", line)
+        else:
+            call_result = call
+        self.add(Assign(result, call_result, line))
+        self.goto_and_activate(out)
+        return result
+
     def unary_op(self,
                  lreg: Value,
                  expr_op: str,
                  line: int) -> Value:
+        call_c_ops_candidates = c_unary_ops.get(expr_op, [])
+        target = self.matching_call_c(call_c_ops_candidates, [lreg], line)
+        if target:
+            return target
         ops = unary_ops.get(expr_op, [])
         target = self.matching_primitive_op(ops, [lreg], line)
         assert target, 'Unsupported unary operation: %s' % expr_op
@@ -536,12 +621,14 @@ class LowLevelIRBuilder:
 
     def make_dict(self, key_value_pairs: Sequence[DictEntry], line: int) -> Value:
         result = None  # type: Union[Value, None]
-        initial_items = []  # type: List[Value]
+        keys = []  # type: List[Value]
+        values = []  # type: List[Value]
         for key, value in key_value_pairs:
             if key is not None:
                 # key:value
                 if result is None:
-                    initial_items.extend((key, value))
+                    keys.append(key)
+                    values.append(value)
                     continue
 
                 self.translate_special_method_call(
@@ -553,16 +640,16 @@ class LowLevelIRBuilder:
             else:
                 # **value
                 if result is None:
-                    result = self.primitive_op(new_dict_op, initial_items, line)
+                    result = self._create_dict(keys, values, line)
 
-                self.primitive_op(
+                self.call_c(
                     dict_update_in_display_op,
                     [result, value],
                     line=line
                 )
 
         if result is None:
-            result = self.primitive_op(new_dict_op, initial_items, line)
+            result = self._create_dict(keys, values, line)
 
         return result
 
@@ -570,6 +657,10 @@ class LowLevelIRBuilder:
                      args: List[Value],
                      fn_op: str,
                      line: int) -> Value:
+        call_c_ops_candidates = c_function_ops.get(fn_op, [])
+        target = self.matching_call_c(call_c_ops_candidates, args, line)
+        if target:
+            return target
         ops = func_ops.get(fn_op, [])
         target = self.matching_primitive_op(ops, args, line)
         assert target, 'Unsupported builtin function: %s' % fn_op
@@ -643,6 +734,75 @@ class LowLevelIRBuilder:
             elif not is_same_type(value.type, bool_rprimitive):
                 value = self.primitive_op(bool_op, [value], value.line)
         self.add(Branch(value, true, false, Branch.BOOL_EXPR))
+
+    def call_c(self,
+               desc: CFunctionDescription,
+               args: List[Value],
+               line: int,
+               result_type: Optional[RType] = None) -> Value:
+        # handle void function via singleton RVoid instance
+        coerced = []
+        # coerce fixed number arguments
+        for i in range(min(len(args), len(desc.arg_types))):
+            formal_type = desc.arg_types[i]
+            arg = args[i]
+            arg = self.coerce(arg, formal_type, line)
+            coerced.append(arg)
+        # reorder args if necessary
+        if desc.ordering is not None:
+            assert desc.var_arg_type is None
+            coerced = [coerced[i] for i in desc.ordering]
+        # coerce any var_arg
+        var_arg_idx = -1
+        if desc.var_arg_type is not None:
+            var_arg_idx = len(desc.arg_types)
+            for i in range(len(desc.arg_types), len(args)):
+                arg = args[i]
+                arg = self.coerce(arg, desc.var_arg_type, line)
+                coerced.append(arg)
+        target = self.add(CallC(desc.c_function_name, coerced, desc.return_type, desc.steals,
+                                desc.error_kind, line, var_arg_idx))
+        if desc.truncated_type is None:
+            result = target
+        else:
+            truncate = self.add(Truncate(target, desc.return_type, desc.truncated_type))
+            result = truncate
+        if result_type and not is_runtime_subtype(result.type, result_type):
+            if is_none_rprimitive(result_type):
+                # Special case None return. The actual result may actually be a bool
+                # and so we can't just coerce it.
+                result = self.none()
+            else:
+                result = self.coerce(target, result_type, line)
+        return result
+
+    def matching_call_c(self,
+                        candidates: List[CFunctionDescription],
+                        args: List[Value],
+                        line: int,
+                        result_type: Optional[RType] = None) -> Optional[Value]:
+        # TODO: this function is very similar to matching_primitive_op
+        # we should remove the old one or refactor both them into only as we move forward
+        matching = None  # type: Optional[CFunctionDescription]
+        for desc in candidates:
+            if len(desc.arg_types) != len(args):
+                continue
+            if all(is_subtype(actual.type, formal)
+                   for actual, formal in zip(args, desc.arg_types)):
+                if matching:
+                    assert matching.priority != desc.priority, 'Ambiguous:\n1) %s\n2) %s' % (
+                        matching, desc)
+                    if desc.priority > matching.priority:
+                        matching = desc
+                else:
+                    matching = desc
+        if matching:
+            target = self.call_c(matching, args, line, result_type)
+            return target
+        return None
+
+    def binary_int_op(self, type: RType, lhs: Value, rhs: Value, op: int, line: int) -> Value:
+        return self.add(BinaryIntOp(type, lhs, rhs, op, line))
 
     # Internal helpers
 
@@ -728,6 +888,11 @@ class LowLevelIRBuilder:
         Return None if no translation found; otherwise return the target register.
         """
         ops = method_ops.get(name, [])
+        call_c_ops_candidates = c_method_call_ops.get(name, [])
+        call_c_op = self.matching_call_c(call_c_ops_candidates, [base_reg] + args,
+                                         line, result_type)
+        if call_c_op is not None:
+            return call_c_op
         return self.matching_primitive_op(ops, [base_reg] + args, line, result_type=result_type)
 
     def translate_eq_cmp(self,
@@ -773,3 +938,18 @@ class LowLevelIRBuilder:
             ltype,
             line
         )
+
+    def _create_dict(self,
+                     keys: List[Value],
+                     values: List[Value],
+                     line: int) -> Value:
+        """Create a dictionary(possibly empty) using keys and values"""
+        # keys and values should have the same number of items
+        size = len(keys)
+        if size > 0:
+            load_size_op = self.add(LoadInt(size, -1, c_pyssize_t_rprimitive))
+            # merge keys and values
+            items = [i for t in list(zip(keys, values)) for i in t]
+            return self.call_c(dict_build_op, [load_size_op] + items, line)
+        else:
+            return self.call_c(dict_new_op, [], line)
