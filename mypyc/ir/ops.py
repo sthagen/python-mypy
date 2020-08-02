@@ -25,7 +25,7 @@ from mypy.nodes import SymbolNode
 from mypyc.ir.rtypes import (
     RType, RInstance, RTuple, RVoid, is_bool_rprimitive, is_int_rprimitive,
     is_short_int_rprimitive, is_none_rprimitive, object_rprimitive, bool_rprimitive,
-    short_int_rprimitive, int_rprimitive, void_rtype
+    short_int_rprimitive, int_rprimitive, void_rtype, is_c_py_ssize_t_rprimitive
 )
 from mypyc.common import short_name
 
@@ -138,6 +138,7 @@ class Environment:
         self.indexes = OrderedDict()  # type: Dict[Value, int]
         self.symtable = OrderedDict()  # type: OrderedDict[SymbolNode, AssignmentTarget]
         self.temp_index = 0
+        self.temp_load_int_idx = 0
         # All names genereted; value is the number of duplicates seen.
         self.names = {}  # type: Dict[str, int]
         self.vars_needing_init = set()  # type: Set[Value]
@@ -198,6 +199,10 @@ class Environment:
         """Record the value of an operation."""
         if reg.is_void:
             return
+        if isinstance(reg, LoadInt):
+            self.add(reg, "i%d" % self.temp_load_int_idx)
+            self.temp_load_int_idx += 1
+            return
         self.add(reg, 'r%d' % self.temp_index)
         self.temp_index += 1
 
@@ -232,17 +237,24 @@ class Environment:
                 i = n
         return ''.join(result)
 
-    def to_lines(self) -> List[str]:
+    def to_lines(self, const_regs: Optional[Dict[str, int]] = None) -> List[str]:
         result = []
         i = 0
         regs = list(self.regs())
-
+        if const_regs is None:
+            const_regs = {}
         while i < len(regs):
             i0 = i
-            group = [regs[i0].name]
+            if regs[i0].name not in const_regs:
+                group = [regs[i0].name]
+            else:
+                group = []
+                i += 1
+                continue
             while i + 1 < len(regs) and regs[i + 1].type == regs[i0].type:
                 i += 1
-                group.append(regs[i].name)
+                if regs[i].name not in const_regs:
+                    group.append(regs[i].name)
             i += 1
             result.append('%s :: %s' % (', '.join(group), regs[i0].type))
         return result
@@ -1270,12 +1282,17 @@ class BinaryIntOp(RegisterOp):
     DIV = 3  # type: Final
     MOD = 4  # type: Final
     # logical
+    # S for signed and U for unsigned
     EQ = 100  # type: Final
     NEQ = 101  # type: Final
-    LT = 102  # type: Final
-    GT = 103  # type: Final
-    LEQ = 104  # type: Final
-    GEQ = 105  # type: Final
+    SLT = 102  # type: Final
+    SGT = 103  # type: Final
+    SLE = 104  # type: Final
+    SGE = 105  # type: Final
+    ULT = 106  # type: Final
+    UGT = 107  # type: Final
+    ULE = 108  # type: Final
+    UGE = 109  # type: Final
     # bitwise
     AND = 200  # type: Final
     OR = 201  # type: Final
@@ -1291,10 +1308,14 @@ class BinaryIntOp(RegisterOp):
         MOD: '%',
         EQ: '==',
         NEQ: '!=',
-        LT: '<',
-        GT: '>',
-        LEQ: '<=',
-        GEQ: '>=',
+        SLT: '<',
+        SGT: '>',
+        SLE: '<=',
+        SGE: '>=',
+        ULT: '<',
+        UGT: '>',
+        ULE: '<=',
+        UGE: '>=',
         AND: '&',
         OR: '|',
         XOR: '^',
@@ -1313,10 +1334,42 @@ class BinaryIntOp(RegisterOp):
         return [self.lhs, self.rhs]
 
     def to_str(self, env: Environment) -> str:
-        return env.format('%r = %r %s %r', self, self.lhs, self.op_str[self.op], self.rhs)
+        if self.op in (self.SLT, self.SGT, self.SLE, self.SGE):
+            sign_format = " :: signed"
+        elif self.op in (self.ULT, self.UGT, self.ULE, self.UGE):
+            sign_format = " :: unsigned"
+        else:
+            sign_format = ""
+        return env.format('%r = %r %s %r%s', self, self.lhs,
+                          self.op_str[self.op], self.rhs, sign_format)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_binary_int_op(self)
+
+
+class LoadMem(RegisterOp):
+    """Reading a memory location
+
+    type ret = *(type*)src
+    """
+    error_kind = ERR_NEVER
+
+    def __init__(self, type: RType, src: Value, line: int = -1) -> None:
+        super().__init__(line)
+        self.type = type
+        # TODO: for now we enforce that the src memory address should be Py_ssize_t
+        #       later we should also support same width unsigned int
+        assert is_c_py_ssize_t_rprimitive(src.type)
+        self.src = src
+
+    def sources(self) -> List[Value]:
+        return [self.src]
+
+    def to_str(self, env: Environment) -> str:
+        return env.format("%r = load_mem %r :: %r*", self, self.src, self.type)
+
+    def accept(self, visitor: 'OpVisitor[T]') -> T:
+        return visitor.visit_load_mem(self)
 
 
 @trait
@@ -1423,6 +1476,10 @@ class OpVisitor(Generic[T]):
 
     @abstractmethod
     def visit_binary_int_op(self, op: BinaryIntOp) -> T:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_load_mem(self, op: LoadMem) -> T:
         raise NotImplementedError
 
 

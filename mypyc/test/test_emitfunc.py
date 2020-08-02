@@ -1,5 +1,7 @@
 import unittest
 
+from typing import Dict
+
 from mypy.ordered_dict import OrderedDict
 
 from mypy.nodes import Var
@@ -8,11 +10,12 @@ from mypy.test.helpers import assert_string_arrays_equal
 from mypyc.ir.ops import (
     Environment, BasicBlock, Goto, Return, LoadInt, Assign, IncRef, DecRef, Branch,
     Call, Unbox, Box, TupleGet, GetAttr, PrimitiveOp, RegisterOp,
-    SetAttr, Op, Value, CallC
+    SetAttr, Op, Value, CallC, BinaryIntOp, LoadMem
 )
 from mypyc.ir.rtypes import (
     RTuple, RInstance, int_rprimitive, bool_rprimitive, list_rprimitive,
-    dict_rprimitive, object_rprimitive, c_int_rprimitive
+    dict_rprimitive, object_rprimitive, c_int_rprimitive, short_int_rprimitive, int32_rprimitive,
+    int64_rprimitive
 )
 from mypyc.ir.func_ir import FuncIR, FuncDecl, RuntimeArg, FuncSignature
 from mypyc.ir.class_ir import ClassIR
@@ -30,6 +33,7 @@ from mypyc.primitives.dict_ops import (
 from mypyc.primitives.int_ops import int_neg_op
 from mypyc.subtype import is_subtype
 from mypyc.namegen import NameGenerator
+from mypyc.common import IS_32_BIT_PLATFORM
 
 
 class TestFunctionEmitterVisitor(unittest.TestCase):
@@ -44,6 +48,12 @@ class TestFunctionEmitterVisitor(unittest.TestCase):
         self.o2 = self.env.add_local(Var('o2'), object_rprimitive)
         self.d = self.env.add_local(Var('d'), dict_rprimitive)
         self.b = self.env.add_local(Var('b'), bool_rprimitive)
+        self.s1 = self.env.add_local(Var('s1'), short_int_rprimitive)
+        self.s2 = self.env.add_local(Var('s2'), short_int_rprimitive)
+        self.i32 = self.env.add_local(Var('i32'), int32_rprimitive)
+        self.i32_1 = self.env.add_local(Var('i32_1'), int32_rprimitive)
+        self.i64 = self.env.add_local(Var('i64'), int64_rprimitive)
+        self.i64_1 = self.env.add_local(Var('i64_1'), int64_rprimitive)
         self.t = self.env.add_local(Var('t'), RTuple([int_rprimitive, bool_rprimitive]))
         self.tt = self.env.add_local(
             Var('tt'),
@@ -57,7 +67,10 @@ class TestFunctionEmitterVisitor(unittest.TestCase):
         self.context = EmitterContext(NameGenerator([['mod']]))
         self.emitter = Emitter(self.context, self.env)
         self.declarations = Emitter(self.context, self.env)
-        self.visitor = FunctionEmitterVisitor(self.emitter, self.declarations, 'prog.py', 'prog')
+
+        const_int_regs = {}  # type: Dict[str, int]
+        self.visitor = FunctionEmitterVisitor(self.emitter, self.declarations, 'prog.py', 'prog',
+                                              const_int_regs)
 
     def test_goto(self) -> None:
         self.assert_emit(Goto(BasicBlock(2)),
@@ -69,9 +82,9 @@ class TestFunctionEmitterVisitor(unittest.TestCase):
 
     def test_load_int(self) -> None:
         self.assert_emit(LoadInt(5),
-                         "cpy_r_r0 = 10;")
+                         "cpy_r_i0 = 10;")
         self.assert_emit(LoadInt(5, -1, c_int_rprimitive),
-                         "cpy_r_r00 = 5;")
+                         "cpy_r_i1 = 5;")
 
     def test_tuple_get(self) -> None:
         self.assert_emit(TupleGet(self.t, 1, 0), 'cpy_r_r0 = cpy_r_t.f1;')
@@ -245,6 +258,30 @@ class TestFunctionEmitterVisitor(unittest.TestCase):
             'in', self.b, self.o, self.d,
             """cpy_r_r0 = PyDict_Contains(cpy_r_d, cpy_r_o);""")
 
+    def test_binary_int_op(self) -> None:
+        # signed
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.s1, self.s2, BinaryIntOp.SLT, 1),
+                         """cpy_r_r0 = (Py_ssize_t)cpy_r_s1 < (Py_ssize_t)cpy_r_s2;""")
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.i32, self.i32_1, BinaryIntOp.SLT, 1),
+                         """cpy_r_r00 = cpy_r_i32 < cpy_r_i32_1;""")
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.i64, self.i64_1, BinaryIntOp.SLT, 1),
+                         """cpy_r_r01 = cpy_r_i64 < cpy_r_i64_1;""")
+        # unsigned
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.s1, self.s2, BinaryIntOp.ULT, 1),
+                         """cpy_r_r02 = cpy_r_s1 < cpy_r_s2;""")
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.i32, self.i32_1, BinaryIntOp.ULT, 1),
+                         """cpy_r_r03 = (uint32_t)cpy_r_i32 < (uint32_t)cpy_r_i32_1;""")
+        self.assert_emit(BinaryIntOp(bool_rprimitive, self.i64, self.i64_1, BinaryIntOp.ULT, 1),
+                         """cpy_r_r04 = (uint64_t)cpy_r_i64 < (uint64_t)cpy_r_i64_1;""")
+
+    def test_load_mem(self) -> None:
+        if IS_32_BIT_PLATFORM:
+            self.assert_emit(LoadMem(bool_rprimitive, self.i32),
+                             """cpy_r_r0 = *(char *)cpy_r_i32;""")
+        else:
+            self.assert_emit(LoadMem(bool_rprimitive, self.i64),
+                             """cpy_r_r0 = *(char *)cpy_r_i64;""")
+
     def assert_emit(self, op: Op, expected: str) -> None:
         self.emitter.fragments = []
         self.declarations.fragments = []
@@ -302,7 +339,7 @@ class TestGenerateFunction(unittest.TestCase):
         fn = FuncIR(FuncDecl('myfunc', None, 'mod', FuncSignature([self.arg], int_rprimitive)),
                     [self.block], self.env)
         emitter = Emitter(EmitterContext(NameGenerator([['mod']])))
-        generate_native_function(fn, emitter, 'prog.py', 'prog')
+        generate_native_function(fn, emitter, 'prog.py', 'prog', False)
         result = emitter.fragments
         assert_string_arrays_equal(
             [
@@ -321,14 +358,14 @@ class TestGenerateFunction(unittest.TestCase):
         fn = FuncIR(FuncDecl('myfunc', None, 'mod', FuncSignature([self.arg], list_rprimitive)),
                     [self.block], self.env)
         emitter = Emitter(EmitterContext(NameGenerator([['mod']])))
-        generate_native_function(fn, emitter, 'prog.py', 'prog')
+        generate_native_function(fn, emitter, 'prog.py', 'prog', False)
         result = emitter.fragments
         assert_string_arrays_equal(
             [
                 'PyObject *CPyDef_myfunc(CPyTagged cpy_r_arg) {\n',
-                '    CPyTagged cpy_r_r0;\n',
+                '    CPyTagged cpy_r_i0;\n',
                 'CPyL0: ;\n',
-                '    cpy_r_r0 = 10;\n',
+                '    cpy_r_i0 = 10;\n',
                 '}\n',
             ],
             result, msg='Generated code invalid')
