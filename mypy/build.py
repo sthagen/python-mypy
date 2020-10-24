@@ -223,7 +223,9 @@ def _build(sources: List[BuildSource],
                     options.show_error_codes,
                     options.pretty,
                     lambda path: read_py_file(path, cached_read, options.python_version),
-                    options.show_absolute_path)
+                    options.show_absolute_path,
+                    options.enabled_error_codes,
+                    options.disabled_error_codes)
     plugin, snapshot = load_plugins(options, errors, stdout, extra_plugins)
 
     # Add catch-all .gitignore to cache dir if we created it
@@ -267,6 +269,7 @@ def _build(sources: List[BuildSource],
             reports.finish()
         if not cache_dir_existed and os.path.isdir(options.cache_dir):
             add_catch_all_gitignore(options.cache_dir)
+            exclude_from_backups(options.cache_dir)
 
 
 def default_data_dir() -> str:
@@ -762,13 +765,14 @@ class BuildManager:
         """Is there a file in the file system corresponding to module id?"""
         return find_module_simple(id, self) is not None
 
-    def parse_file(self, id: str, path: str, source: str, ignore_errors: bool) -> MypyFile:
+    def parse_file(self, id: str, path: str, source: str, ignore_errors: bool,
+                   options: Options) -> MypyFile:
         """Parse the source of a file with the given name.
 
         Raise CompileError if there is a parse error.
         """
         t0 = time.time()
-        tree = parse(source, path, id, self.errors, options=self.options)
+        tree = parse(source, path, id, self.errors, options=options)
         tree._fullname = id
         self.add_stats(files_parsed=1,
                        modules_parsed=int(not tree.is_stub),
@@ -1110,6 +1114,22 @@ def add_catch_all_gitignore(target_dir: str) -> None:
         with open(gitignore, "x") as f:
             print("# Automatically created by mypy", file=f)
             print("*", file=f)
+    except FileExistsError:
+        pass
+
+
+def exclude_from_backups(target_dir: str) -> None:
+    """Exclude the directory from various archives and backups supporting CACHEDIR.TAG.
+
+    If the CACHEDIR.TAG file exists the function is a no-op.
+    """
+    cachedir_tag = os.path.join(target_dir, "CACHEDIR.TAG")
+    try:
+        with open(cachedir_tag, "x") as f:
+            f.write("""Signature: 8a477f597d28d172789f06886806bc55
+# This file is a cache directory tag automtically created by mypy.
+# For information about cache directory tags see https://bford.info/cachedir/
+""")
     except FileExistsError:
         pass
 
@@ -1696,6 +1716,7 @@ class State:
     order = None  # type: int  # Order in which modules were encountered
     id = None  # type: str  # Fully qualified module name
     path = None  # type: Optional[str]  # Path to module source
+    abspath = None  # type: Optional[str]  # Absolute path to module source
     xpath = None  # type: str  # Path or '<string>'
     source = None  # type: Optional[str]  # Module source code
     source_hash = None  # type: Optional[str]  # Hash calculated based on the source code
@@ -1797,6 +1818,8 @@ class State:
             if follow_imports == 'silent':
                 self.ignore_all = True
         self.path = path
+        if path:
+            self.abspath = os.path.abspath(path)
         self.xpath = path or '<string>'
         if path and source is None and self.manager.fscache.isdir(path):
             source = ''
@@ -2001,7 +2024,8 @@ class State:
 
             self.parse_inline_configuration(source)
             self.tree = manager.parse_file(self.id, self.xpath, source,
-                                           self.ignore_all or self.options.ignore_errors)
+                                           self.ignore_all or self.options.ignore_errors,
+                                           self.options)
 
         modules[self.id] = self.tree
 
@@ -2754,7 +2778,7 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
 
     # Note: Running this each time could be slow in the daemon. If it's a problem, we
     # can do more work to maintain this incrementally.
-    seen_files = {st.path: st for st in graph.values() if st.path}
+    seen_files = {st.abspath: st for st in graph.values() if st.path}
 
     # Collect dependencies.  We go breadth-first.
     # More nodes might get added to new as we go, but that's fine.
@@ -2801,16 +2825,18 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
                     if dep in st.dependencies_set:
                         st.suppress_dependency(dep)
                 else:
-                    if newst.path in seen_files:
-                        manager.errors.report(
-                            -1, 0,
-                            "Source file found twice under different module names: '{}' and '{}'".
-                            format(seen_files[newst.path].id, newst.id),
-                            blocker=True)
-                        manager.errors.raise_error()
-
                     if newst.path:
-                        seen_files[newst.path] = newst
+                        newst_path = os.path.abspath(newst.path)
+
+                        if newst_path in seen_files:
+                            manager.errors.report(
+                                -1, 0,
+                                "Source file found twice under different module names: "
+                                "'{}' and '{}'".format(seen_files[newst_path].id, newst.id),
+                                blocker=True)
+                            manager.errors.raise_error()
+
+                        seen_files[newst_path] = newst
 
                     assert newst.id not in graph, newst.id
                     graph[newst.id] = newst

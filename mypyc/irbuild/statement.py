@@ -12,17 +12,17 @@ import importlib.util
 from mypy.nodes import (
     Block, ExpressionStmt, ReturnStmt, AssignmentStmt, OperatorAssignmentStmt, IfStmt, WhileStmt,
     ForStmt, BreakStmt, ContinueStmt, RaiseStmt, TryStmt, WithStmt, AssertStmt, DelStmt,
-    Expression, StrExpr, TempNode, Lvalue, Import, ImportFrom, ImportAll
+    Expression, StrExpr, TempNode, Lvalue, Import, ImportFrom, ImportAll, TupleExpr
 )
 
 from mypyc.ir.ops import (
     Assign, Unreachable, AssignmentTarget, AssignmentTargetRegister, AssignmentTargetIndex,
-    AssignmentTargetAttr, AssignmentTargetTuple, PrimitiveOp, RaiseStandardError, LoadErrorValue,
+    AssignmentTargetAttr, AssignmentTargetTuple, RaiseStandardError, LoadErrorValue,
     BasicBlock, TupleGet, Value, Register, Branch, NO_TRACEBACK_LINE_NO
 )
 from mypyc.ir.rtypes import exc_rtuple
 from mypyc.primitives.generic_ops import py_delattr_op
-from mypyc.primitives.misc_ops import true_op, false_op, type_op, get_module_dict_op
+from mypyc.primitives.misc_ops import type_op, get_module_dict_op
 from mypyc.primitives.dict_ops import dict_get_item_op
 from mypyc.primitives.exc_ops import (
     raise_exception_op, reraise_exception_op, error_catch_op, exc_matches_op, restore_exc_info_op,
@@ -79,6 +79,20 @@ def transform_assignment_stmt(builder: IRBuilder, stmt: AssignmentStmt) -> None:
         builder.get_assignment_target(lvalue, stmt.line)
         return
 
+    # multiple assignment
+    if (isinstance(lvalue, TupleExpr) and isinstance(stmt.rvalue, TupleExpr)
+            and len(lvalue.items) == len(stmt.rvalue.items)):
+        temps = []
+        for right in stmt.rvalue.items:
+            rvalue_reg = builder.accept(right)
+            temp = builder.alloc_temp(rvalue_reg.type)
+            builder.assign(temp, rvalue_reg, stmt.line)
+            temps.append(temp)
+        for (left, temp) in zip(lvalue.items, temps):
+            assignment_target = builder.get_assignment_target(left)
+            builder.assign(assignment_target, temp, stmt.line)
+        return
+
     line = stmt.rvalue.line
     rvalue_reg = builder.accept(stmt.rvalue)
     if builder.non_function_scope() and stmt.is_final_def:
@@ -125,7 +139,7 @@ def transform_import(builder: IRBuilder, node: Import) -> None:
             base = name = node_id.split('.')[0]
 
         # Python 3.7 has a nice 'PyImport_GetModule' function that we can't use :(
-        mod_dict = builder.primitive_op(get_module_dict_op, [], node.line)
+        mod_dict = builder.call_c(get_module_dict_op, [], node.line)
         obj = builder.call_c(dict_get_item_op,
                              [mod_dict, builder.load_static_unicode(base)], node.line)
         builder.gen_method_call(
@@ -291,7 +305,7 @@ def transform_try_except(builder: IRBuilder,
             matches = builder.call_c(
                 exc_matches_op, [builder.accept(type)], type.line
             )
-            builder.add(Branch(matches, body_block, next_block, Branch.BOOL_EXPR))
+            builder.add(Branch(matches, body_block, next_block, Branch.BOOL))
             builder.activate_block(body_block)
         if var:
             target = builder.get_assignment_target(var)
@@ -325,7 +339,7 @@ def transform_try_except(builder: IRBuilder,
     # the exception.
     builder.activate_block(double_except_block)
     builder.call_c(restore_exc_info_op, [builder.read(old_exc)], line)
-    builder.primitive_op(keep_propagating_op, [], NO_TRACEBACK_LINE_NO)
+    builder.call_c(keep_propagating_op, [], NO_TRACEBACK_LINE_NO)
     builder.add(Unreachable())
 
     # If present, compile the else body in the obvious way
@@ -463,7 +477,7 @@ def try_finally_resolve_control(builder: IRBuilder,
     # If there was an exception, restore again
     builder.activate_block(cleanup_block)
     finally_control.gen_cleanup(builder, -1)
-    builder.primitive_op(keep_propagating_op, [], NO_TRACEBACK_LINE_NO)
+    builder.call_c(keep_propagating_op, [], NO_TRACEBACK_LINE_NO)
     builder.add(Unreachable())
 
     return out_block
@@ -540,7 +554,7 @@ def transform_with(builder: IRBuilder,
         builder.py_get_attr(typ, '__enter__', line), [mgr_v], line
     )
     mgr = builder.maybe_spill(mgr_v)
-    exc = builder.maybe_spill_assignable(builder.primitive_op(true_op, [], -1))
+    exc = builder.maybe_spill_assignable(builder.true())
 
     def try_body() -> None:
         if target:
@@ -548,7 +562,7 @@ def transform_with(builder: IRBuilder,
         body()
 
     def except_body() -> None:
-        builder.assign(exc, builder.primitive_op(false_op, [], -1), line)
+        builder.assign(exc, builder.false(), line)
         out_block, reraise_block = BasicBlock(), BasicBlock()
         builder.add_bool_branch(
             builder.py_call(builder.read(exit_),
@@ -564,7 +578,7 @@ def transform_with(builder: IRBuilder,
     def finally_body() -> None:
         out_block, exit_block = BasicBlock(), BasicBlock()
         builder.add(
-            Branch(builder.read(exc), exit_block, out_block, Branch.BOOL_EXPR)
+            Branch(builder.read(exc), exit_block, out_block, Branch.BOOL)
         )
         builder.activate_block(exit_block)
         none = builder.none_object()
@@ -634,7 +648,7 @@ def transform_del_item(builder: IRBuilder, target: AssignmentTarget, line: int) 
         )
     elif isinstance(target, AssignmentTargetAttr):
         key = builder.load_static_unicode(target.attr)
-        builder.add(PrimitiveOp([target.obj, key], py_delattr_op, line))
+        builder.call_c(py_delattr_op, [target.obj, key], line)
     elif isinstance(target, AssignmentTargetRegister):
         # Delete a local by assigning an error value to it, which will
         # prompt the insertion of uninit checks.

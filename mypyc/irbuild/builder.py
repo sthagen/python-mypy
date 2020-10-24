@@ -19,7 +19,7 @@ from mypy.build import Graph
 from mypy.nodes import (
     MypyFile, SymbolNode, Statement, OpExpr, IntExpr, NameExpr, LDEF, Var, UnaryExpr,
     CallExpr, IndexExpr, Expression, MemberExpr, RefExpr, Lvalue, TupleExpr,
-    TypeInfo, Decorator, OverloadedFuncDef, StarExpr, GDEF, ARG_POS, ARG_NAMED
+    TypeInfo, Decorator, OverloadedFuncDef, StarExpr, ComparisonExpr, GDEF, ARG_POS, ARG_NAMED
 )
 from mypy.types import (
     Type, Instance, TupleType, UninhabitedType, get_proper_type
@@ -34,20 +34,20 @@ from mypyc.ir.ops import (
     BasicBlock, AssignmentTarget, AssignmentTargetRegister, AssignmentTargetIndex,
     AssignmentTargetAttr, AssignmentTargetTuple, Environment, LoadInt, Value,
     Register, Op, Assign, Branch, Unreachable, TupleGet, GetAttr, SetAttr, LoadStatic,
-    InitStatic, PrimitiveOp, OpDescription, NAMESPACE_MODULE, RaiseStandardError,
+    InitStatic, OpDescription, NAMESPACE_MODULE, RaiseStandardError,
 )
 from mypyc.ir.rtypes import (
     RType, RTuple, RInstance, int_rprimitive, dict_rprimitive,
     none_rprimitive, is_none_rprimitive, object_rprimitive, is_object_rprimitive,
-    str_rprimitive,
+    str_rprimitive, is_tagged
 )
 from mypyc.ir.func_ir import FuncIR, INVALID_FUNC_DEF
 from mypyc.ir.class_ir import ClassIR, NonExtClassInfo
 from mypyc.primitives.registry import func_ops, CFunctionDescription, c_function_ops
-from mypyc.primitives.list_ops import list_len_op, to_list, list_pop_last
+from mypyc.primitives.list_ops import to_list, list_pop_last
 from mypyc.primitives.dict_ops import dict_get_item_op, dict_set_item_op
 from mypyc.primitives.generic_ops import py_setattr_op, iter_op, next_op
-from mypyc.primitives.misc_ops import true_op, false_op, import_op
+from mypyc.primitives.misc_ops import import_op
 from mypyc.crash import catch_errors
 from mypyc.options import CompilerOptions
 from mypyc.errors import Errors
@@ -185,6 +185,9 @@ class IRBuilder:
     def load_static_unicode(self, value: str) -> Value:
         return self.builder.load_static_unicode(value)
 
+    def load_static_int(self, value: int) -> Value:
+        return self.builder.load_static_int(value)
+
     def primitive_op(self, desc: OpDescription, args: List[Value], line: int) -> Value:
         return self.builder.primitive_op(desc, args, line)
 
@@ -199,6 +202,28 @@ class IRBuilder:
 
     def none_object(self) -> Value:
         return self.builder.none_object()
+
+    def none(self) -> Value:
+        return self.builder.none()
+
+    def true(self) -> Value:
+        return self.builder.true()
+
+    def false(self) -> Value:
+        return self.builder.false()
+
+    def new_list_op(self, values: List[Value], line: int) -> Value:
+        return self.builder.new_list_op(values, line)
+
+    def new_set_op(self, values: List[Value], line: int) -> Value:
+        return self.builder.new_set_op(values, line)
+
+    def translate_is_op(self,
+                        lreg: Value,
+                        rreg: Value,
+                        expr_op: str,
+                        line: int) -> Value:
+        return self.builder.translate_is_op(lreg, rreg, expr_op, line)
 
     def py_call(self,
                 function: Value,
@@ -238,6 +263,15 @@ class IRBuilder:
     def compare_tagged(self, lhs: Value, rhs: Value, op: str, line: int) -> Value:
         return self.builder.compare_tagged(lhs, rhs, op, line)
 
+    def compare_tuples(self, lhs: Value, rhs: Value, op: str, line: int) -> Value:
+        return self.builder.compare_tuples(lhs, rhs, op, line)
+
+    def builtin_len(self, val: Value, line: int) -> Value:
+        return self.builder.builtin_len(val, line)
+
+    def new_tuple(self, items: List[Value], line: int) -> Value:
+        return self.builder.new_tuple(items, line)
+
     @property
     def environment(self) -> Environment:
         return self.builder.environment
@@ -255,7 +289,7 @@ class IRBuilder:
 
         needs_import, out = BasicBlock(), BasicBlock()
         first_load = self.load_module(id)
-        comparison = self.binary_op(first_load, self.none_object(), 'is not', line)
+        comparison = self.translate_is_op(first_load, self.none_object(), 'is not', line)
         self.add_bool_branch(comparison, out, needs_import)
 
         self.activate_block(needs_import)
@@ -336,9 +370,9 @@ class IRBuilder:
         """Load value of a final name or class-level attribute."""
         if isinstance(val, bool):
             if val:
-                return self.primitive_op(true_op, [], line)
+                return self.true()
             else:
-                return self.primitive_op(false_op, [], line)
+                return self.false()
         elif isinstance(val, int):
             # TODO: take care of negative integer initializers
             # (probably easier to fix this in mypy itself).
@@ -448,7 +482,7 @@ class IRBuilder:
             else:
                 key = self.load_static_unicode(target.attr)
                 boxed_reg = self.builder.box(rvalue_reg)
-                self.add(PrimitiveOp([target.obj, key, boxed_reg], py_setattr_op, line))
+                self.call_c(py_setattr_op, [target.obj, key, boxed_reg], line)
         elif isinstance(target, AssignmentTargetIndex):
             target_reg2 = self.gen_method_call(
                 target.base, '__setitem__', [target.index, rvalue_reg], None, line)
@@ -484,14 +518,14 @@ class IRBuilder:
                                           rvalue_reg: Value,
                                           line: int) -> None:
 
-        iterator = self.primitive_op(iter_op, [rvalue_reg], line)
+        iterator = self.call_c(iter_op, [rvalue_reg], line)
 
         # This may be the whole lvalue list if there is no starred value
         split_idx = target.star_idx if target.star_idx is not None else len(target.items)
 
         # Assign values before the first starred value
         for litem in target.items[:split_idx]:
-            ritem = self.primitive_op(next_op, [iterator], line)
+            ritem = self.call_c(next_op, [iterator], line)
             error_block, ok_block = BasicBlock(), BasicBlock()
             self.add(Branch(ritem, error_block, ok_block, Branch.IS_ERROR))
 
@@ -508,12 +542,12 @@ class IRBuilder:
         if target.star_idx is not None:
             post_star_vals = target.items[split_idx + 1:]
             iter_list = self.call_c(to_list, [iterator], line)
-            iter_list_len = self.primitive_op(list_len_op, [iter_list], line)
+            iter_list_len = self.builtin_len(iter_list, line)
             post_star_len = self.add(LoadInt(len(post_star_vals)))
             condition = self.binary_op(post_star_len, iter_list_len, '<=', line)
 
             error_block, ok_block = BasicBlock(), BasicBlock()
-            self.add(Branch(condition, ok_block, error_block, Branch.BOOL_EXPR))
+            self.add(Branch(condition, ok_block, error_block, Branch.BOOL))
 
             self.activate_block(error_block)
             self.add(RaiseStandardError(RaiseStandardError.VALUE_ERROR,
@@ -532,7 +566,7 @@ class IRBuilder:
         # There is no starred value, so check if there are extra values in rhs that
         # have not been assigned.
         else:
-            extra = self.primitive_op(next_op, [iterator], line)
+            extra = self.call_c(next_op, [iterator], line)
             error_block, ok_block = BasicBlock(), BasicBlock()
             self.add(Branch(extra, ok_block, error_block, Branch.IS_ERROR))
 
@@ -779,10 +813,44 @@ class IRBuilder:
                 self.process_conditional(e.right, true, false)
         elif isinstance(e, UnaryExpr) and e.op == 'not':
             self.process_conditional(e.expr, false, true)
-        # Catch-all for arbitrary expressions.
         else:
+            res = self.maybe_process_conditional_comparison(e, true, false)
+            if res:
+                return
+            # Catch-all for arbitrary expressions.
             reg = self.accept(e)
             self.add_bool_branch(reg, true, false)
+
+    def maybe_process_conditional_comparison(self,
+                                             e: Expression,
+                                             true: BasicBlock,
+                                             false: BasicBlock) -> bool:
+        """Transform simple tagged integer comparisons in a conditional context.
+
+        Return True if the operation is supported (and was transformed). Otherwise,
+        do nothing and return False.
+
+        Args:
+            e: Arbitrary expression
+            true: Branch target if comparison is true
+            false: Branch target if comparison is false
+        """
+        if not isinstance(e, ComparisonExpr) or len(e.operands) != 2:
+            return False
+        ltype = self.node_type(e.operands[0])
+        rtype = self.node_type(e.operands[1])
+        if not is_tagged(ltype) or not is_tagged(rtype):
+            return False
+        op = e.operators[0]
+        if op not in ('==', '!=', '<', '<=', '>', '>='):
+            return False
+        left = self.accept(e.operands[0])
+        right = self.accept(e.operands[1])
+        # "left op right" for two tagged integers
+        self.builder.compare_tagged_condition(left, right, op, true, false, e.line)
+        return True
+
+    # Basic helpers
 
     def flatten_classes(self, arg: Union[RefExpr, TupleExpr]) -> Optional[List[ClassIR]]:
         """Flatten classes in isinstance(obj, (A, (B, C))).
@@ -806,8 +874,6 @@ class IRBuilder:
                 else:
                     return None
             return res
-
-    # Basic helpers
 
     def enter(self, fn_info: Union[FuncInfo, str] = '') -> None:
         if isinstance(fn_info, str):

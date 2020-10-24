@@ -453,6 +453,8 @@ potentially problematic or redundant in some way.
         This limitation will be removed in future releases of mypy.
 
 
+.. _miscellaneous-strictness-flags:
+
 Miscellaneous strictness flags
 ******************************
 
@@ -553,6 +555,36 @@ of the above sections.
     Note: the exact list of flags enabled by running :option:`--strict` may change
     over time.
 
+.. option:: --disable-error-code
+
+    This flag allows disabling one or multiple error codes globally.
+
+    .. code-block:: python
+
+        # no flag
+        x = 'a string'
+        x.trim()  # error: "str" has no attribute "trim"  [attr-defined]
+
+        # --disable-error-code attr-defined
+        x = 'a string'
+        x.trim()
+
+.. option:: --enable-error-code
+
+    This flag allows enabling one or multiple error codes globally.
+
+    Note: This flag will override disabled error codes from the --disable-error-code
+    flag
+
+    .. code-block:: python
+
+        # --disable-error-code attr-defined
+        x = 'a string'
+        x.trim()
+
+        # --disable-error-code attr-defined --enable-error-code attr-defined
+        x = 'a string'
+        x.trim()  # error: "str" has no attribute "trim"  [attr-defined]
 
 .. _configuring-error-messages:
 

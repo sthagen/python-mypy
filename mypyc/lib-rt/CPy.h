@@ -8,6 +8,7 @@
 #include <frameobject.h>
 #include <structmember.h>
 #include <assert.h>
+#include <stdint.h>
 #include "pythonsupport.h"
 #include "mypyc_util.h"
 
@@ -128,11 +129,17 @@ void CPyTagged_IncRef(CPyTagged x);
 void CPyTagged_DecRef(CPyTagged x);
 void CPyTagged_XDecRef(CPyTagged x);
 CPyTagged CPyTagged_Negate(CPyTagged num);
+CPyTagged CPyTagged_Invert(CPyTagged num);
 CPyTagged CPyTagged_Add(CPyTagged left, CPyTagged right);
 CPyTagged CPyTagged_Subtract(CPyTagged left, CPyTagged right);
 CPyTagged CPyTagged_Multiply(CPyTagged left, CPyTagged right);
 CPyTagged CPyTagged_FloorDivide(CPyTagged left, CPyTagged right);
 CPyTagged CPyTagged_Remainder(CPyTagged left, CPyTagged right);
+CPyTagged CPyTagged_And(CPyTagged left, CPyTagged right);
+CPyTagged CPyTagged_Or(CPyTagged left, CPyTagged right);
+CPyTagged CPyTagged_Xor(CPyTagged left, CPyTagged right);
+CPyTagged CPyTagged_Rshift(CPyTagged left, CPyTagged right);
+CPyTagged CPyTagged_Lshift(CPyTagged left, CPyTagged right);
 bool CPyTagged_IsEq_(CPyTagged left, CPyTagged right);
 bool CPyTagged_IsLt_(CPyTagged left, CPyTagged right);
 PyObject *CPyTagged_Str(CPyTagged n);
@@ -302,6 +309,8 @@ static void CPy_LogGetAttr(const char *method, PyObject *obj, PyObject *attr) {
 CPyTagged CPyObject_Hash(PyObject *o);
 PyObject *CPyObject_GetAttr3(PyObject *v, PyObject *name, PyObject *defl);
 PyObject *CPyIter_Next(PyObject *iter);
+PyObject *CPyNumber_Power(PyObject *base, PyObject *index);
+PyObject *CPyObject_GetSlice(PyObject *obj, CPyTagged start, CPyTagged end);
 
 
 // List operations
@@ -317,6 +326,7 @@ CPyTagged CPyList_Count(PyObject *obj, PyObject *value);
 PyObject *CPyList_Extend(PyObject *o1, PyObject *o2);
 PyObject *CPySequence_Multiply(PyObject *seq, CPyTagged t_size);
 PyObject *CPySequence_RMultiply(CPyTagged t_size, PyObject *seq);
+PyObject *CPyList_GetSlice(PyObject *obj, CPyTagged start, CPyTagged end);
 
 
 // Dict operations
@@ -325,6 +335,7 @@ PyObject *CPySequence_RMultiply(CPyTagged t_size, PyObject *seq);
 PyObject *CPyDict_GetItem(PyObject *dict, PyObject *key);
 int CPyDict_SetItem(PyObject *dict, PyObject *key, PyObject *value);
 PyObject *CPyDict_Get(PyObject *dict, PyObject *key, PyObject *fallback);
+PyObject *CPyDict_GetWithNone(PyObject *dict, PyObject *key);
 PyObject *CPyDict_Build(Py_ssize_t size, ...);
 int CPyDict_Update(PyObject *dict, PyObject *stuff);
 int CPyDict_UpdateInDisplay(PyObject *dict, PyObject *stuff);
@@ -365,6 +376,7 @@ static inline char CPyDict_CheckSize(PyObject *dict, CPyTagged size) {
 PyObject *CPyStr_GetItem(PyObject *str, CPyTagged index);
 PyObject *CPyStr_Split(PyObject *str, PyObject *sep, CPyTagged max_split);
 PyObject *CPyStr_Append(PyObject *o1, PyObject *o2);
+PyObject *CPyStr_GetSlice(PyObject *obj, CPyTagged start, CPyTagged end);
 
 
 // Set operations
@@ -377,6 +389,7 @@ bool CPySet_Remove(PyObject *set, PyObject *key);
 
 
 PyObject *CPySequenceTuple_GetItem(PyObject *tuple, CPyTagged index);
+PyObject *CPySequenceTuple_GetSlice(PyObject *obj, CPyTagged start, CPyTagged end);
 
 
 // Exception operations
@@ -407,6 +420,9 @@ static int CPy_NoErrOccured(void) {
     return PyErr_Occurred() == NULL;
 }
 
+static inline bool CPy_KeepPropagating(void) {
+    return 0;
+}
 // We want to avoid the public PyErr_GetExcInfo API for these because
 // it requires a bunch of spurious refcount traffic on the parts of
 // the triple we don't care about. Unfortunately the layout of the
@@ -444,9 +460,12 @@ PyObject *CPy_GetCoro(PyObject *obj);
 PyObject *CPyIter_Send(PyObject *iter, PyObject *val);
 int CPy_YieldFromErrorHandle(PyObject *iter, PyObject **outp);
 PyObject *CPy_FetchStopIterationValue(void);
-PyObject *CPyType_FromTemplate(PyTypeObject *template_,
+PyObject *CPyType_FromTemplate(PyObject *template_,
                                PyObject *orig_bases,
                                PyObject *modname);
+PyObject *CPyType_FromTemplateWarpper(PyObject *template_,
+                                      PyObject *orig_bases,
+                                      PyObject *modname);
 int CPyDataclass_SleightOfHand(PyObject *dataclass_dec, PyObject *tp,
                                PyObject *dict, PyObject *annotations);
 PyObject *CPyPickle_SetState(PyObject *obj, PyObject *state);
