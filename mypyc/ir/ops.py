@@ -1,26 +1,21 @@
-"""Representation of low-level opcodes for compiler intermediate representation (IR).
+"""Low-level opcodes for compiler intermediate representation (IR).
 
-Opcodes operate on abstract registers in a register machine. Each
-register has a type and a name, specified in an environment. A register
-can hold various things:
+Opcodes operate on abstract values (Value) in a register machine. Each
+value has a type (RType). A value can hold various things:
 
-- local variables
-- intermediate values of expressions
+- local variables (Register)
+- intermediate values of expressions (RegisterOp subclasses)
 - condition flags (true/false)
 - literals (integer literals, True, False, etc.)
 """
 
 from abc import abstractmethod
 from typing import (
-    List, Sequence, Dict, Generic, TypeVar, Optional, Any, NamedTuple, Tuple, Callable,
-    Union, Iterable, Set
+    List, Sequence, Dict, Generic, TypeVar, Optional, NamedTuple, Tuple, Union
 )
-from mypy.ordered_dict import OrderedDict
 
 from typing_extensions import Final, Type, TYPE_CHECKING
 from mypy_extensions import trait
-
-from mypy.nodes import SymbolNode
 
 from mypyc.ir.rtypes import (
     RType, RInstance, RTuple, RVoid, is_bool_rprimitive, is_int_rprimitive,
@@ -28,7 +23,6 @@ from mypyc.ir.rtypes import (
     short_int_rprimitive, int_rprimitive, void_rtype, pointer_rprimitive, is_pointer_rprimitive,
     bit_rprimitive, is_bit_rprimitive
 )
-from mypyc.common import short_name
 
 if TYPE_CHECKING:
     from mypyc.ir.class_ir import ClassIR  # noqa
@@ -37,229 +31,10 @@ if TYPE_CHECKING:
 T = TypeVar('T')
 
 
-# We do a three-pass deserialization scheme in order to resolve name
-# references.
-#  1. Create an empty ClassIR for each class in an SCC.
-#  2. Deserialize all of the functions, which can contain references
-#     to ClassIRs in their types
-#  3. Deserialize all of the classes, which contain lots of references
-#     to the functions they contain. (And to other classes.)
-#
-# Note that this approach differs from how we deserialize ASTs in mypy itself,
-# where everything is deserialized in one pass then a second pass cleans up
-# 'cross_refs'. We don't follow that approach here because it seems to be more
-# code for not a lot of gain since it is easy in mypyc to identify all the objects
-# we might need to reference.
-#
-# Because of these references, we need to maintain maps from class
-# names to ClassIRs and func names to FuncIRs.
-#
-# These are tracked in a DeserMaps which is passed to every
-# deserialization function.
-#
-# (Serialization and deserialization *will* be used for incremental
-# compilation but so far it is not hooked up to anything.)
-DeserMaps = NamedTuple('DeserMaps',
-                       [('classes', Dict[str, 'ClassIR']), ('functions', Dict[str, 'FuncIR'])])
-
-
-class AssignmentTarget(object):
-    """Abstract base class for assignment targets in IR"""
-
-    type = None  # type: RType
-
-    @abstractmethod
-    def to_str(self, env: 'Environment') -> str:
-        raise NotImplementedError
-
-
-class AssignmentTargetRegister(AssignmentTarget):
-    """Register as assignment target"""
-
-    def __init__(self, register: 'Register') -> None:
-        self.register = register
-        self.type = register.type
-
-    def to_str(self, env: 'Environment') -> str:
-        return self.register.name
-
-
-class AssignmentTargetIndex(AssignmentTarget):
-    """base[index] as assignment target"""
-
-    def __init__(self, base: 'Value', index: 'Value') -> None:
-        self.base = base
-        self.index = index
-        # TODO: This won't be right for user-defined classes. Store the
-        #       lvalue type in mypy and remove this special case.
-        self.type = object_rprimitive
-
-    def to_str(self, env: 'Environment') -> str:
-        return '{}[{}]'.format(self.base.name, self.index.name)
-
-
-class AssignmentTargetAttr(AssignmentTarget):
-    """obj.attr as assignment target"""
-
-    def __init__(self, obj: 'Value', attr: str) -> None:
-        self.obj = obj
-        self.attr = attr
-        if isinstance(obj.type, RInstance) and obj.type.class_ir.has_attr(attr):
-            # Native attribute reference
-            self.obj_type = obj.type  # type: RType
-            self.type = obj.type.attr_type(attr)
-        else:
-            # Python attribute reference
-            self.obj_type = object_rprimitive
-            self.type = object_rprimitive
-
-    def to_str(self, env: 'Environment') -> str:
-        return '{}.{}'.format(self.obj.to_str(env), self.attr)
-
-
-class AssignmentTargetTuple(AssignmentTarget):
-    """x, ..., y as assignment target"""
-
-    def __init__(self, items: List[AssignmentTarget],
-                 star_idx: Optional[int] = None) -> None:
-        self.items = items
-        self.star_idx = star_idx
-        # The shouldn't be relevant, but provide it just in case.
-        self.type = object_rprimitive
-
-    def to_str(self, env: 'Environment') -> str:
-        return '({})'.format(', '.join(item.to_str(env) for item in self.items))
-
-
-class Environment:
-    """Maintain the register symbol table and manage temp generation"""
-
-    def __init__(self, name: Optional[str] = None) -> None:
-        self.name = name
-        self.indexes = OrderedDict()  # type: Dict[Value, int]
-        self.symtable = OrderedDict()  # type: OrderedDict[SymbolNode, AssignmentTarget]
-        self.temp_index = 0
-        self.temp_load_int_idx = 0
-        # All names genereted; value is the number of duplicates seen.
-        self.names = {}  # type: Dict[str, int]
-        self.vars_needing_init = set()  # type: Set[Value]
-
-    def regs(self) -> Iterable['Value']:
-        return self.indexes.keys()
-
-    def add(self, reg: 'Value', name: str) -> None:
-        # Ensure uniqueness of variable names in this environment.
-        # This is needed for things like list comprehensions, which are their own scope--
-        # if we don't do this and two comprehensions use the same variable, we'd try to
-        # declare that variable twice.
-        unique_name = name
-        while unique_name in self.names:
-            unique_name = name + str(self.names[name])
-            self.names[name] += 1
-        self.names[unique_name] = 0
-        reg.name = unique_name
-
-        self.indexes[reg] = len(self.indexes)
-
-    def add_local(self, symbol: SymbolNode, typ: RType, is_arg: bool = False) -> 'Register':
-        """Add register that represents a symbol to the symbol table.
-
-        Args:
-            is_arg: is this a function argument
-        """
-        assert isinstance(symbol, SymbolNode)
-        reg = Register(typ, symbol.line, is_arg=is_arg)
-        self.symtable[symbol] = AssignmentTargetRegister(reg)
-        self.add(reg, symbol.name)
-        return reg
-
-    def add_local_reg(self, symbol: SymbolNode,
-                      typ: RType, is_arg: bool = False) -> AssignmentTargetRegister:
-        """Like add_local, but return an assignment target instead of value."""
-        self.add_local(symbol, typ, is_arg)
-        target = self.symtable[symbol]
-        assert isinstance(target, AssignmentTargetRegister)
-        return target
-
-    def add_target(self, symbol: SymbolNode, target: AssignmentTarget) -> AssignmentTarget:
-        self.symtable[symbol] = target
-        return target
-
-    def lookup(self, symbol: SymbolNode) -> AssignmentTarget:
-        return self.symtable[symbol]
-
-    def add_temp(self, typ: RType) -> 'Register':
-        """Add register that contains a temporary value with the given type."""
-        assert isinstance(typ, RType)
-        reg = Register(typ)
-        self.add(reg, 'r%d' % self.temp_index)
-        self.temp_index += 1
-        return reg
-
-    def add_op(self, reg: 'RegisterOp') -> None:
-        """Record the value of an operation."""
-        if reg.is_void:
-            return
-        if isinstance(reg, LoadInt):
-            self.add(reg, "i%d" % self.temp_load_int_idx)
-            self.temp_load_int_idx += 1
-            return
-        self.add(reg, 'r%d' % self.temp_index)
-        self.temp_index += 1
-
-    def format(self, fmt: str, *args: Any) -> str:
-        result = []
-        i = 0
-        arglist = list(args)
-        while i < len(fmt):
-            n = fmt.find('%', i)
-            if n < 0:
-                n = len(fmt)
-            result.append(fmt[i:n])
-            if n < len(fmt):
-                typespec = fmt[n + 1]
-                arg = arglist.pop(0)
-                if typespec == 'r':
-                    result.append(arg.name)
-                elif typespec == 'd':
-                    result.append('%d' % arg)
-                elif typespec == 'f':
-                    result.append('%f' % arg)
-                elif typespec == 'l':
-                    if isinstance(arg, BasicBlock):
-                        arg = arg.label
-                    result.append('L%s' % arg)
-                elif typespec == 's':
-                    result.append(str(arg))
-                else:
-                    raise ValueError('Invalid format sequence %{}'.format(typespec))
-                i = n + 2
-            else:
-                i = n
-        return ''.join(result)
-
-    def to_lines(self, const_regs: Optional[Dict[str, int]] = None) -> List[str]:
-        result = []
-        i = 0
-        regs = list(self.regs())
-        if const_regs is None:
-            const_regs = {}
-        regs = [reg for reg in regs if reg.name not in const_regs]
-        while i < len(regs):
-            i0 = i
-            group = [regs[i0].name]
-            while i + 1 < len(regs) and regs[i + 1].type == regs[i0].type:
-                i += 1
-                group.append(regs[i].name)
-            i += 1
-            result.append('%s :: %s' % (', '.join(group), regs[i0].type))
-        return result
-
-
 class BasicBlock:
     """Basic IR block.
 
-    Ends with a jump, branch, or return.
+    Constains a sequence of ops and ends with a jump, branch, or return.
 
     When building the IR, ops that raise exceptions can be included in
     the middle of a basic block, but the exceptions aren't checked.
@@ -309,27 +84,20 @@ NO_TRACEBACK_LINE_NO = -10000
 
 
 class Value:
-    """Abstract base class for all values.
+    """Abstract base class for all IR values.
 
     These include references to registers, literals, and various operations.
     """
 
-    # Source line number
+    # Source line number (-1 for no/unknown line)
     line = -1
-    name = '?'
+    # Type of the value or the result of the operation
     type = void_rtype  # type: RType
     is_borrowed = False
-
-    def __init__(self, line: int) -> None:
-        self.line = line
 
     @property
     def is_void(self) -> bool:
         return isinstance(self.type, RVoid)
-
-    @abstractmethod
-    def to_str(self, env: Environment) -> str:
-        raise NotImplementedError
 
 
 class Register(Value):
@@ -339,26 +107,26 @@ class Register(Value):
     (but not all) temporary values.
     """
 
-    def __init__(self, type: RType, line: int = -1, is_arg: bool = False, name: str = '') -> None:
-        super().__init__(line)
-        self.name = name
+    def __init__(self, type: RType, name: str = '', is_arg: bool = False, line: int = -1) -> None:
         self.type = type
+        self.name = name
         self.is_arg = is_arg
         self.is_borrowed = is_arg
-
-    def to_str(self, env: Environment) -> str:
-        return self.name
+        self.line = line
 
     @property
     def is_void(self) -> bool:
         return False
+
+    def __repr__(self) -> str:
+        return '<Register %r at %s>' % (self.name, hex(id(self)))
 
 
 class Op(Value):
     """Abstract base class for all operations (as opposed to values)."""
 
     def __init__(self, line: int) -> None:
-        super().__init__(line)
+        self.line = line
 
     def can_raise(self) -> bool:
         # Override this is if Op may raise an exception. Note that currently the fact that
@@ -407,9 +175,6 @@ class Goto(ControlOp):
     def sources(self) -> List[Value]:
         return []
 
-    def to_str(self, env: Environment) -> str:
-        return env.format('goto %l', self.label)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_goto(self)
 
@@ -430,11 +195,6 @@ class Branch(ControlOp):
 
     BOOL = 100  # type: Final
     IS_ERROR = 101  # type: Final
-
-    op_names = {
-        BOOL: ('%r', 'bool'),
-        IS_ERROR: ('is_error(%r)', ''),
-    }  # type: Final
 
     def __init__(self,
                  left: Value,
@@ -460,20 +220,6 @@ class Branch(ControlOp):
     def sources(self) -> List[Value]:
         return [self.left]
 
-    def to_str(self, env: Environment) -> str:
-        fmt, typ = self.op_names[self.op]
-        if self.negated:
-            fmt = 'not {}'.format(fmt)
-
-        cond = env.format(fmt, self.left)
-        tb = ''
-        if self.traceback_entry:
-            tb = ' (error at %s:%d)' % self.traceback_entry
-        fmt = 'if {} goto %l{} else goto %l'.format(cond, tb)
-        if typ:
-            fmt += ' :: {}'.format(typ)
-        return env.format(fmt, self.true, self.false)
-
     def invert(self) -> None:
         self.negated = not self.negated
 
@@ -496,9 +242,6 @@ class Return(ControlOp):
     def stolen(self) -> List[Value]:
         return [self.reg]
 
-    def to_str(self, env: Environment) -> str:
-        return env.format('return %r', self.reg)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_return(self)
 
@@ -518,9 +261,6 @@ class Unreachable(ControlOp):
     def __init__(self, line: int = -1) -> None:
         super().__init__(line)
 
-    def to_str(self, env: Environment) -> str:
-        return "unreachable"
-
     def sources(self) -> List[Value]:
         return []
 
@@ -531,7 +271,7 @@ class Unreachable(ControlOp):
 class RegisterOp(Op):
     """Abstract base class for operations that can be written as r1 = f(r2, ..., rn).
 
-    Takes some registers, performs an operation and generates an output.
+    Takes some values, performs an operation and generates an output.
     Doesn't do any control flow, but can raise an error.
     """
 
@@ -556,12 +296,6 @@ class IncRef(RegisterOp):
         assert src.type.is_refcounted
         super().__init__(line)
         self.src = src
-
-    def to_str(self, env: Environment) -> str:
-        s = env.format('inc_ref %r', self.src)
-        if is_bool_rprimitive(self.src.type) or is_int_rprimitive(self.src.type):
-            s += ' :: {}'.format(short_name(self.src.type.name))
-        return s
 
     def sources(self) -> List[Value]:
         return [self.src]
@@ -588,12 +322,6 @@ class DecRef(RegisterOp):
     def __repr__(self) -> str:
         return '<%sDecRef %r>' % ('X' if self.is_xdec else '', self.src)
 
-    def to_str(self, env: Environment) -> str:
-        s = env.format('%sdec_ref %r', 'x' if self.is_xdec else '', self.src)
-        if is_bool_rprimitive(self.src.type) or is_int_rprimitive(self.src.type):
-            s += ' :: {}'.format(short_name(self.src.type.name))
-        return s
-
     def sources(self) -> List[Value]:
         return [self.src]
 
@@ -614,15 +342,6 @@ class Call(RegisterOp):
         self.fn = fn
         self.args = list(args)
         self.type = fn.sig.ret_type
-
-    def to_str(self, env: Environment) -> str:
-        args = ', '.join(env.format('%r', arg) for arg in self.args)
-        # TODO: Display long name?
-        short_name = self.fn.shortname
-        s = '%s(%s)' % (short_name, args)
-        if not self.is_void:
-            s = env.format('%r = ', self) + s
-        return s
 
     def sources(self) -> List[Value]:
         return list(self.args[:])
@@ -652,124 +371,11 @@ class MethodCall(RegisterOp):
             self.receiver_type.name, method)
         self.type = method_ir.ret_type
 
-    def to_str(self, env: Environment) -> str:
-        args = ', '.join(env.format('%r', arg) for arg in self.args)
-        s = env.format('%r.%s(%s)', self.obj, self.method, args)
-        if not self.is_void:
-            s = env.format('%r = ', self) + s
-        return s
-
     def sources(self) -> List[Value]:
         return self.args[:] + [self.obj]
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_method_call(self)
-
-
-@trait
-class EmitterInterface:
-    @abstractmethod
-    def reg(self, name: Value) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
-    def c_error_value(self, rtype: RType) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
-    def temp_name(self) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
-    def emit_line(self, line: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def emit_lines(self, *lines: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def emit_declaration(self, line: str) -> None:
-        raise NotImplementedError
-
-
-EmitCallback = Callable[[EmitterInterface, List[str], str], None]
-
-# True steals all arguments, False steals none, a list steals those in matching positions
-StealsDescription = Union[bool, List[bool]]
-
-# Description of a primitive operation
-OpDescription = NamedTuple(
-    'OpDescription', [('name', str),
-                      ('arg_types', List[RType]),
-                      ('result_type', Optional[RType]),
-                      ('is_var_arg', bool),
-                      ('error_kind', int),
-                      ('format_str', str),
-                      ('emit', EmitCallback),
-                      ('steals', StealsDescription),
-                      ('is_borrowed', bool),
-                      ('priority', int)])  # To resolve ambiguities, highest priority wins
-
-
-class PrimitiveOp(RegisterOp):
-    """reg = op(reg, ...)
-
-    These are register-based primitive operations that work on specific
-    operand types.
-
-    The details of the operation are defined by the 'desc'
-    attribute. The modules under mypyc.primitives define the supported
-    operations. mypyc.irbuild uses the descriptions to look for suitable
-    primitive ops.
-    """
-
-    def __init__(self,
-                 args: List[Value],
-                 desc: OpDescription,
-                 line: int) -> None:
-        if not desc.is_var_arg:
-            assert len(args) == len(desc.arg_types)
-        self.error_kind = desc.error_kind
-        super().__init__(line)
-        self.args = args
-        self.desc = desc
-        if desc.result_type is None:
-            assert desc.error_kind == ERR_FALSE  # TODO: No-value ops not supported yet
-            self.type = bool_rprimitive
-        else:
-            self.type = desc.result_type
-
-        self.is_borrowed = desc.is_borrowed
-
-    def sources(self) -> List[Value]:
-        return list(self.args)
-
-    def stolen(self) -> List[Value]:
-        if isinstance(self.desc.steals, list):
-            assert len(self.desc.steals) == len(self.args)
-            return [arg for arg, steal in zip(self.args, self.desc.steals) if steal]
-        else:
-            return [] if not self.desc.steals else self.sources()
-
-    def __repr__(self) -> str:
-        return '<PrimitiveOp name=%r args=%s>' % (self.desc.name,
-                                                  self.args)
-
-    def to_str(self, env: Environment) -> str:
-        params = {}  # type: Dict[str, Any]
-        if not self.is_void:
-            params['dest'] = env.format('%r', self)
-        args = [env.format('%r', arg) for arg in self.args]
-        params['args'] = args
-        params['comma_args'] = ', '.join(args)
-        params['colon_args'] = ', '.join(
-            '{}: {}'.format(k, v) for k, v in zip(args[::2], args[1::2])
-        )
-        return self.desc.format_str.format(**params).strip()
-
-    def accept(self, visitor: 'OpVisitor[T]') -> T:
-        return visitor.visit_primitive_op(self)
 
 
 class Assign(Op):
@@ -787,9 +393,6 @@ class Assign(Op):
 
     def stolen(self) -> List[Value]:
         return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = %r', self.dest, self.src)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_assign(self)
@@ -810,9 +413,6 @@ class LoadInt(RegisterOp):
 
     def sources(self) -> List[Value]:
         return []
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = %d', self, self.value)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_int(self)
@@ -841,9 +441,6 @@ class LoadErrorValue(RegisterOp):
     def sources(self) -> List[Value]:
         return []
 
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = <error> :: %s', self, self.type)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_error_value(self)
 
@@ -863,9 +460,6 @@ class GetAttr(RegisterOp):
 
     def sources(self) -> List[Value]:
         return [self.obj]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = %r.%s', self, self.obj, self.attr)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_get_attr(self)
@@ -893,9 +487,6 @@ class SetAttr(RegisterOp):
 
     def stolen(self) -> List[Value]:
         return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r.%s = %r; %r = is_error', self.obj, self.attr, self.src, self)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_set_attr(self)
@@ -942,13 +533,6 @@ class LoadStatic(RegisterOp):
     def sources(self) -> List[Value]:
         return []
 
-    def to_str(self, env: Environment) -> str:
-        ann = '  ({})'.format(repr(self.ann)) if self.ann else ''
-        name = self.identifier
-        if self.module_name is not None:
-            name = '{}.{}'.format(self.module_name, name)
-        return env.format('%r = %s :: %s%s', self, name, self.namespace, ann)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_static(self)
 
@@ -976,12 +560,6 @@ class InitStatic(RegisterOp):
     def sources(self) -> List[Value]:
         return [self.value]
 
-    def to_str(self, env: Environment) -> str:
-        name = self.identifier
-        if self.module_name is not None:
-            name = '{}.{}'.format(self.module_name, name)
-        return env.format('%s = %r :: %s', name, self.value, self.namespace)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_init_static(self)
 
@@ -1005,10 +583,6 @@ class TupleSet(RegisterOp):
     def sources(self) -> List[Value]:
         return self.items[:]
 
-    def to_str(self, env: Environment) -> str:
-        item_str = ', '.join(env.format('%r', item) for item in self.items)
-        return env.format('%r = (%s)', self, item_str)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_tuple_set(self)
 
@@ -1027,9 +601,6 @@ class TupleGet(RegisterOp):
 
     def sources(self) -> List[Value]:
         return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = %r[%d]', self, self.src, self.index)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_tuple_get(self)
@@ -1055,9 +626,6 @@ class Cast(RegisterOp):
 
     def stolen(self) -> List[Value]:
         return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = cast(%s, %r)', self, self.type, self.src)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_cast(self)
@@ -1088,9 +656,6 @@ class Box(RegisterOp):
     def stolen(self) -> List[Value]:
         return [self.src]
 
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = box(%s, %r)', self, self.src.type, self.src)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_box(self)
 
@@ -1111,9 +676,6 @@ class Unbox(RegisterOp):
 
     def sources(self) -> List[Value]:
         return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = unbox(%s, %r)', self, self.type, self.src)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_unbox(self)
@@ -1143,22 +705,15 @@ class RaiseStandardError(RegisterOp):
         self.value = value
         self.type = bool_rprimitive
 
-    def to_str(self, env: Environment) -> str:
-        if self.value is not None:
-            if isinstance(self.value, str):
-                return 'raise %s(%r)' % (self.class_name, self.value)
-            elif isinstance(self.value, Value):
-                return env.format('raise %s(%r)', self.class_name, self.value)
-            else:
-                assert False, 'value type must be either str or Value'
-        else:
-            return 'raise %s' % self.class_name
-
     def sources(self) -> List[Value]:
         return []
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_raise_standard_error(self)
+
+
+# True steals all arguments, False steals none, a list steals those in matching positions
+StealsDescription = Union[bool, List[bool]]
 
 
 class CallC(RegisterOp):
@@ -1184,13 +739,6 @@ class CallC(RegisterOp):
         self.steals = steals
         self.is_borrowed = is_borrowed
         self.var_arg_idx = var_arg_idx  # the position of the first variable argument in args
-
-    def to_str(self, env: Environment) -> str:
-        args_str = ', '.join(env.format('%r', arg) for arg in self.args)
-        if self.is_void:
-            return env.format('%s(%s)', self.function_name, args_str)
-        else:
-            return env.format('%r = %s(%s)', self, self.function_name, args_str)
 
     def sources(self) -> List[Value]:
         return self.args
@@ -1233,9 +781,6 @@ class Truncate(RegisterOp):
     def stolen(self) -> List[Value]:
         return []
 
-    def to_str(self, env: Environment) -> str:
-        return env.format("%r = truncate %r: %r to %r", self, self.src, self.src_type, self.type)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_truncate(self)
 
@@ -1259,20 +804,17 @@ class LoadGlobal(RegisterOp):
     def sources(self) -> List[Value]:
         return []
 
-    def to_str(self, env: Environment) -> str:
-        ann = '  ({})'.format(repr(self.ann)) if self.ann else ''
-        return env.format('%r = load_global %s :: static%s', self, self.identifier, ann)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_global(self)
 
 
-class BinaryIntOp(RegisterOp):
+class IntOp(RegisterOp):
     """Binary arithmetic and bitwise operations on integer types
 
     These ops are low-level and will be eventually generated to simple x op y form.
     The left and right values should be of low-level integer types that support those ops
     """
+
     error_kind = ERR_NEVER
 
     # arithmetic
@@ -1312,12 +854,8 @@ class BinaryIntOp(RegisterOp):
     def sources(self) -> List[Value]:
         return [self.lhs, self.rhs]
 
-    def to_str(self, env: Environment) -> str:
-        return env.format('%r = %r %s %r', self, self.lhs,
-                          self.op_str[self.op], self.rhs)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
-        return visitor.visit_binary_int_op(self)
+        return visitor.visit_int_op(self)
 
 
 class ComparisonOp(RegisterOp):
@@ -1333,6 +871,7 @@ class ComparisonOp(RegisterOp):
     Supports comparisons between fixed-width integer types and pointer
     types.
     """
+
     # Must be ERR_NEVER or ERR_FALSE. ERR_FALSE means that a false result
     # indicates that an exception has been raised and should be propagated.
     error_kind = ERR_NEVER
@@ -1372,16 +911,6 @@ class ComparisonOp(RegisterOp):
     def sources(self) -> List[Value]:
         return [self.lhs, self.rhs]
 
-    def to_str(self, env: Environment) -> str:
-        if self.op in (self.SLT, self.SGT, self.SLE, self.SGE):
-            sign_format = " :: signed"
-        elif self.op in (self.ULT, self.UGT, self.ULE, self.UGE):
-            sign_format = " :: unsigned"
-        else:
-            sign_format = ""
-        return env.format('%r = %r %s %r%s', self, self.lhs,
-                          self.op_str[self.op], self.rhs, sign_format)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_comparison_op(self)
 
@@ -1400,6 +929,7 @@ class LoadMem(RegisterOp):
             memory, or we know that the target won't be freed, it can be
             None.
     """
+
     error_kind = ERR_NEVER
 
     def __init__(self, type: RType, src: Value, base: Optional[Value], line: int = -1) -> None:
@@ -1417,13 +947,6 @@ class LoadMem(RegisterOp):
             return [self.src, self.base]
         else:
             return [self.src]
-
-    def to_str(self, env: Environment) -> str:
-        if self.base:
-            base = env.format(', %r', self.base)
-        else:
-            base = ''
-        return env.format("%r = load_mem %r%s :: %r*", self, self.src, base, self.type)
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_mem(self)
@@ -1444,6 +967,7 @@ class SetMem(Op):
             memory, or we know that the target won't be freed, it can be
             None.
     """
+
     error_kind = ERR_NEVER
 
     def __init__(self,
@@ -1468,19 +992,13 @@ class SetMem(Op):
     def stolen(self) -> List[Value]:
         return [self.src]
 
-    def to_str(self, env: Environment) -> str:
-        if self.base:
-            base = env.format(', %r', self.base)
-        else:
-            base = ''
-        return env.format("set_mem %r, %r%s :: %r*", self.dest, self.src, base, self.dest_type)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_set_mem(self)
 
 
 class GetElementPtr(RegisterOp):
     """Get the address of a struct element"""
+
     error_kind = ERR_NEVER
 
     def __init__(self, src: Value, src_type: RType, field: str, line: int = -1) -> None:
@@ -1493,28 +1011,34 @@ class GetElementPtr(RegisterOp):
     def sources(self) -> List[Value]:
         return [self.src]
 
-    def to_str(self, env: Environment) -> str:
-        return env.format("%r = get_element_ptr %r %s :: %r", self, self.src,
-                          self.field, self.src_type)
-
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_get_element_ptr(self)
 
 
 class LoadAddress(RegisterOp):
+    """Get the address of a value
+
+    ret = (type)&src
+
+    Attributes:
+      type: Type of the loaded address(e.g. ptr/object_ptr)
+      src: Source value, str for named constants like 'PyList_Type',
+           Register for temporary values
+    """
+
     error_kind = ERR_NEVER
     is_borrowed = True
 
-    def __init__(self, type: RType, src: str, line: int = -1) -> None:
+    def __init__(self, type: RType, src: Union[str, Register], line: int = -1) -> None:
         super().__init__(line)
         self.type = type
         self.src = src
 
     def sources(self) -> List[Value]:
-        return []
-
-    def to_str(self, env: Environment) -> str:
-        return env.format("%r = load_address %s", self, self.src)
+        if isinstance(self.src, Register):
+            return [self.src]
+        else:
+            return []
 
     def accept(self, visitor: 'OpVisitor[T]') -> T:
         return visitor.visit_load_address(self)
@@ -1538,10 +1062,6 @@ class OpVisitor(Generic[T]):
 
     @abstractmethod
     def visit_unreachable(self, op: Unreachable) -> T:
-        raise NotImplementedError
-
-    @abstractmethod
-    def visit_primitive_op(self, op: PrimitiveOp) -> T:
         raise NotImplementedError
 
     @abstractmethod
@@ -1623,7 +1143,7 @@ class OpVisitor(Generic[T]):
         raise NotImplementedError
 
     @abstractmethod
-    def visit_binary_int_op(self, op: BinaryIntOp) -> T:
+    def visit_int_op(self, op: IntOp) -> T:
         raise NotImplementedError
 
     @abstractmethod
@@ -1647,9 +1167,31 @@ class OpVisitor(Generic[T]):
         raise NotImplementedError
 
 
-# TODO: Should this live somewhere else?
+# TODO: Should the following definitions live somewhere else?
+
+# We do a three-pass deserialization scheme in order to resolve name
+# references.
+#  1. Create an empty ClassIR for each class in an SCC.
+#  2. Deserialize all of the functions, which can contain references
+#     to ClassIRs in their types
+#  3. Deserialize all of the classes, which contain lots of references
+#     to the functions they contain. (And to other classes.)
+#
+# Note that this approach differs from how we deserialize ASTs in mypy itself,
+# where everything is deserialized in one pass then a second pass cleans up
+# 'cross_refs'. We don't follow that approach here because it seems to be more
+# code for not a lot of gain since it is easy in mypyc to identify all the objects
+# we might need to reference.
+#
+# Because of these references, we need to maintain maps from class
+# names to ClassIRs and func names to FuncIRs.
+#
+# These are tracked in a DeserMaps which is passed to every
+# deserialization function.
+#
+# (Serialization and deserialization *will* be used for incremental
+# compilation but so far it is not hooked up to anything.)
+DeserMaps = NamedTuple('DeserMaps',
+                       [('classes', Dict[str, 'ClassIR']), ('functions', Dict[str, 'FuncIR'])])
+
 LiteralsMap = Dict[Tuple[Type[object], Union[int, float, str, bytes, complex]], str]
-
-
-# Import mypyc.primitives.registry that will set up set up global primitives tables.
-import mypyc.primitives.registry  # noqa

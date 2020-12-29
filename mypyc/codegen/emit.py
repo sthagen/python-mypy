@@ -7,7 +7,7 @@ from mypyc.common import (
     REG_PREFIX, ATTR_PREFIX, STATIC_PREFIX, TYPE_PREFIX, NATIVE_PREFIX,
     FAST_ISINSTANCE_MAX_SUBCLASSES,
 )
-from mypyc.ir.ops import Environment, BasicBlock, Value
+from mypyc.ir.ops import BasicBlock, Value
 from mypyc.ir.rtypes import (
     RType, RTuple, RInstance, RUnion, RPrimitive,
     is_float_rprimitive, is_bool_rprimitive, is_int_rprimitive, is_short_int_rprimitive,
@@ -88,10 +88,12 @@ class EmitterContext:
 class Emitter:
     """Helper for C code generation."""
 
-    def __init__(self, context: EmitterContext, env: Optional[Environment] = None) -> None:
+    def __init__(self,
+                 context: EmitterContext,
+                 value_names: Optional[Dict[Value, str]] = None) -> None:
         self.context = context
         self.names = context.names
-        self.env = env or Environment()
+        self.value_names = value_names or {}
         self.fragments = []  # type: List[str]
         self._indent = 0
 
@@ -108,7 +110,7 @@ class Emitter:
         return 'CPyL%s' % label.label
 
     def reg(self, reg: Value) -> str:
-        return REG_PREFIX + reg.name
+        return REG_PREFIX + self.value_names[reg]
 
     def attr(self, name: str) -> str:
         return ATTR_PREFIX + name
