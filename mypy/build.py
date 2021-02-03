@@ -36,11 +36,10 @@ from mypy.indirection import TypeIndirectionVisitor
 from mypy.errors import Errors, CompileError, ErrorInfo, report_internal_error
 from mypy.util import (
     DecodeError, decode_python_encoding, is_sub_path, get_mypy_comments, module_prefix,
-    read_py_file, hash_digest, is_typeshed_file
+    read_py_file, hash_digest, is_typeshed_file, is_stub_package_file
 )
 if TYPE_CHECKING:
     from mypy.report import Reports  # Avoid unconditional slow import
-from mypy import moduleinfo
 from mypy.fixup import fixup_module
 from mypy.modulefinder import (
     BuildSource, compute_search_paths, FindModuleCache, SearchPaths, ModuleSearchResult,
@@ -60,6 +59,7 @@ from mypy.typestate import TypeState, reset_global_state
 from mypy.renaming import VariableRenameVisitor
 from mypy.config_parser import parse_mypy_comments
 from mypy.freetree import free_tree
+from mypy.stubinfo import legacy_bundled_packages
 from mypy import errorcodes as codes
 
 
@@ -270,6 +270,8 @@ def _build(sources: List[BuildSource],
         if not cache_dir_existed and os.path.isdir(options.cache_dir):
             add_catch_all_gitignore(options.cache_dir)
             exclude_from_backups(options.cache_dir)
+        if os.path.isdir(options.cache_dir):
+            record_missing_stub_packages(options.cache_dir, manager.missing_stub_packages)
 
 
 def default_data_dir() -> str:
@@ -642,6 +644,8 @@ class BuildManager:
         # the semantic analyzer, used only for testing. Currently used only by the new
         # semantic analyzer.
         self.processed_targets = []  # type: List[str]
+        # Missing stub packages encountered.
+        self.missing_stub_packages = set()  # type: Set[str]
 
     def dump_stats(self) -> None:
         if self.options.dump_build_stats:
@@ -1127,7 +1131,7 @@ def exclude_from_backups(target_dir: str) -> None:
     try:
         with open(cachedir_tag, "x") as f:
             f.write("""Signature: 8a477f597d28d172789f06886806bc55
-# This file is a cache directory tag automtically created by mypy.
+# This file is a cache directory tag automatically created by mypy.
 # For information about cache directory tags see https://bford.info/cachedir/
 """)
     except FileExistsError:
@@ -2393,6 +2397,7 @@ def find_module_and_diagnose(manager: BuildManager,
                     follow_imports = 'silent'
         if (id in CORE_BUILTIN_MODULES
                 and not is_typeshed_file(result)
+                and not is_stub_package_file(result)
                 and not options.use_builtins_fixtures
                 and not options.custom_typeshed_dir):
             raise CompileError([
@@ -2404,10 +2409,21 @@ def find_module_and_diagnose(manager: BuildManager,
         # Could not find a module.  Typically the reason is a
         # misspelled module name, missing stub, module not in
         # search path or the module has not been installed.
+
+        ignore_missing_imports = options.ignore_missing_imports
+        top_level = file_id.partition('.')[0]
+        # Don't honor a global (not per-module) ignore_missing_imports
+        # setting for modules that used to have bundled stubs, as
+        # otherwise updating mypy can silently result in new false
+        # negatives.
+        global_ignore_missing_imports = manager.options.ignore_missing_imports
+        if top_level in legacy_bundled_packages and global_ignore_missing_imports:
+            ignore_missing_imports = False
+
         if skip_diagnose:
             raise ModuleNotFound
         if caller_state:
-            if not (options.ignore_missing_imports or in_partial_package(id, manager)):
+            if not (ignore_missing_imports or in_partial_package(id, manager)):
                 module_not_found(manager, caller_line, caller_state, id, result)
             raise ModuleNotFound
         elif root_source:
@@ -2498,15 +2514,17 @@ def module_not_found(manager: BuildManager, line: int, caller_state: State,
         errors.report(line, 0, "Cannot find 'builtins' module. Typeshed appears broken!",
                       blocker=True)
         errors.raise_error()
-    elif moduleinfo.is_std_lib_module(manager.options.python_version, target):
-        msg = "No library stub file for standard library module '{}'".format(target)
-        note = "(Stub files are from https://github.com/python/typeshed)"
-        errors.report(line, 0, msg, code=codes.IMPORT)
-        errors.report(line, 0, note, severity='note', only_once=True, code=codes.IMPORT)
     else:
-        msg, note = reason.error_message_templates()
-        errors.report(line, 0, msg.format(target), code=codes.IMPORT)
-        errors.report(line, 0, note, severity='note', only_once=True, code=codes.IMPORT)
+        msg, notes = reason.error_message_templates()
+        pyver = '%d.%d' % manager.options.python_version
+        errors.report(line, 0, msg.format(module=target, pyver=pyver), code=codes.IMPORT)
+        top_level = target.partition('.')[0]
+        for note in notes:
+            if '{stub_dist}' in note:
+                note = note.format(stub_dist=legacy_bundled_packages[top_level])
+            errors.report(line, 0, note, severity='note', only_once=True, code=codes.IMPORT)
+        if reason is ModuleNotFoundReason.STUBS_NOT_INSTALLED:
+            manager.missing_stub_packages.add(legacy_bundled_packages[top_level])
     errors.set_import_context(save_import_context)
 
 
@@ -3223,3 +3241,23 @@ def topsort(data: Dict[AbstractSet[str],
                 for item, dep in data.items()
                 if item not in ready}
     assert not data, "A cyclic dependency exists amongst %r" % data
+
+
+def missing_stubs_file(cache_dir: str) -> str:
+    return os.path.join(cache_dir, 'missing_stubs')
+
+
+def record_missing_stub_packages(cache_dir: str, missing_stub_packages: Set[str]) -> None:
+    """Write a file containing missing stub packages.
+
+    This allows a subsequent "mypy --install-types" run (without other arguments)
+    to install missing stub packages.
+    """
+    fnam = missing_stubs_file(cache_dir)
+    if missing_stub_packages:
+        with open(fnam, 'w') as f:
+            for pkg in sorted(missing_stub_packages):
+                f.write('%s\n' % pkg)
+    else:
+        if os.path.isfile(fnam):
+            os.remove(fnam)
