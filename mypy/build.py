@@ -15,7 +15,6 @@ import errno
 import gc
 import json
 import os
-import pathlib
 import re
 import stat
 import sys
@@ -2205,12 +2204,14 @@ class State:
 
     def compute_fine_grained_deps(self) -> Dict[str, Set[str]]:
         assert self.tree is not None
-        if '/typeshed/' in self.xpath or self.xpath.startswith('typeshed/'):
-            # We don't track changes to typeshed -- the assumption is that they are only changed
-            # as part of mypy updates, which will invalidate everything anyway.
-            #
-            # TODO: Not a reliable test, as we could have a package named typeshed.
-            # TODO: Consider relaxing this -- maybe allow some typeshed changes to be tracked.
+        if self.id in ('builtins', 'typing', 'types', 'sys', '_typeshed'):
+            # We don't track changes to core parts of typeshed -- the
+            # assumption is that they are only changed as part of mypy
+            # updates, which will invalidate everything anyway. These
+            # will always be processed in the initial non-fine-grained
+            # build. Other modules may be brought in as a result of an
+            # fine-grained increment, and we may need these
+            # dependencies then to handle cyclic imports.
             return {}
         from mypy.server.deps import get_dependencies  # Lazy import to speed up startup
         return get_dependencies(target=self.tree,
@@ -2570,6 +2571,7 @@ def log_configuration(manager: BuildManager, sources: List[BuildSource]) -> None
         ("Current Executable", sys.executable),
         ("Cache Dir", manager.options.cache_dir),
         ("Compiled", str(not __file__.endswith(".py"))),
+        ("Exclude", manager.options.exclude),
     ]
 
     for conf_name, conf_value in configuration_vars:
@@ -2769,14 +2771,12 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
                 "Duplicate module named '%s' (also at '%s')" % (st.id, graph[st.id].xpath),
                 blocker=True,
             )
-            p1 = len(pathlib.PurePath(st.xpath).parents)
-            p2 = len(pathlib.PurePath(graph[st.id].xpath).parents)
-
-            if p1 != p2:
-                manager.errors.report(
-                    -1, -1,
-                    "Are you missing an __init__.py?"
-                )
+            manager.errors.report(
+                -1, -1,
+                "Are you missing an __init__.py? Alternatively, consider using --exclude to "
+                "avoid checking one of them.",
+                severity='note'
+            )
 
             manager.errors.raise_error()
         graph[st.id] = st

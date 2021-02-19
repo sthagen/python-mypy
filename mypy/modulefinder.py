@@ -7,6 +7,7 @@ import ast
 import collections
 import functools
 import os
+import re
 import subprocess
 import sys
 from enum import Enum
@@ -187,8 +188,12 @@ class FindModuleCache:
         self.initial_components[lib_path] = components
         return components.get(id, [])
 
-    def find_module(self, id: str) -> ModuleSearchResult:
-        """Return the path of the module source file or why it wasn't found."""
+    def find_module(self, id: str, *, fast_path: bool = False) -> ModuleSearchResult:
+        """Return the path of the module source file or why it wasn't found.
+
+        If fast_path is True, prioritize performance over generating detailed
+        error descriptions.
+        """
         if id not in self.results:
             top_level = id.partition('.')[0]
             use_typeshed = True
@@ -197,7 +202,8 @@ class FindModuleCache:
                 use_typeshed = (self.options is None
                                 or typeshed_py_version(self.options) >= min_version)
             self.results[id] = self._find_module(id, use_typeshed)
-            if (self.results[id] is ModuleNotFoundReason.NOT_FOUND
+            if (not fast_path
+                    and self.results[id] is ModuleNotFoundReason.NOT_FOUND
                     and self._can_find_module_in_parent_dir(id)):
                 self.results[id] = ModuleNotFoundReason.WRONG_WORKING_DIRECTORY
         return self.results[id]
@@ -443,9 +449,14 @@ class FindModuleCache:
         names = sorted(self.fscache.listdir(package_path))
         for name in names:
             # Skip certain names altogether
-            if name == '__pycache__' or name.startswith('.') or name.endswith('~'):
+            if name in ("__pycache__", "site-packages", "node_modules") or name.startswith("."):
                 continue
             subpath = os.path.join(package_path, name)
+
+            if self.options and matches_exclude(
+                subpath, self.options.exclude, self.fscache, self.options.verbosity >= 2
+            ):
+                continue
 
             if self.fscache.isdir(subpath):
                 # Only recurse into packages
@@ -460,11 +471,24 @@ class FindModuleCache:
                 if stem == '__init__':
                     continue
                 if stem not in seen and '.' not in stem and suffix in PYTHON_EXTENSIONS:
-                    # (If we sorted names) we could probably just make the BuildSource ourselves,
-                    # but this ensures compatibility with find_module / the cache
+                    # (If we sorted names by keyfunc) we could probably just make the BuildSource
+                    # ourselves, but this ensures compatibility with find_module / the cache
                     seen.add(stem)
                     sources.extend(self.find_modules_recursive(module + '.' + stem))
         return sources
+
+
+def matches_exclude(subpath: str, exclude: str, fscache: FileSystemCache, verbose: bool) -> bool:
+    if not exclude:
+        return False
+    subpath_str = os.path.relpath(subpath).replace(os.sep, "/")
+    if fscache.isdir(subpath):
+        subpath_str += "/"
+    if re.search(exclude, subpath_str):
+        if verbose:
+            print("TRACE: Excluding {}".format(subpath_str), file=sys.stderr)
+        return True
+    return False
 
 
 def verify_module(fscache: FileSystemCache, id: str, path: str, prefix: str) -> bool:

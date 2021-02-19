@@ -809,6 +809,15 @@ def process_options(args: List[str],
         '--explicit-package-bases', action='store_true',
         help="Use current directory and MYPYPATH to determine module names of files passed")
     code_group.add_argument(
+        "--exclude",
+        metavar="PATTERN",
+        default="",
+        help=(
+            "Regular expression to match file names, directory names or paths which mypy should "
+            "ignore while recursively discovering files to check, e.g. --exclude '/setup\\.py$'"
+        )
+    )
+    code_group.add_argument(
         '-m', '--module', action='append', metavar='MODULE',
         default=[],
         dest='special-opts:modules',
@@ -854,6 +863,7 @@ def process_options(args: List[str],
     environ_cache_dir = os.getenv('MYPY_CACHE_DIR', '')
     if environ_cache_dir.strip():
         options.cache_dir = environ_cache_dir
+    options.cache_dir = os.path.expanduser(options.cache_dir)
 
     # Parse command line for real, using a split namespace.
     special_opts = argparse.Namespace()
@@ -1072,7 +1082,7 @@ def install_types(cache_dir: str,
     if after_run:
         print()
     print('Installing missing stub packages:')
-    cmd = ['python3', '-m', 'pip', 'install'] + packages
+    cmd = [sys.executable, '-m', 'pip', 'install'] + packages
     print(formatter.style(' '.join(cmd), 'none', bold=True))
     print()
     x = input('Install? [yN] ')
