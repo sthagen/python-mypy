@@ -526,6 +526,13 @@ int CPyArg_ParseStackAndKeywordsSimple(PyObject *const *args, Py_ssize_t nargs, 
                                        CPyArg_Parser *parser, ...);
 
 int CPySequence_CheckUnpackCount(PyObject *sequence, Py_ssize_t expected);
+int CPyStatics_Initialize(PyObject **statics,
+                          const char * const *strings,
+                          const char * const *bytestrings,
+                          const char * const *ints,
+                          const double *floats,
+                          const double *complex_numbers,
+                          const int *tuples);
 
 
 #ifdef __cplusplus
