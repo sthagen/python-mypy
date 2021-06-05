@@ -224,7 +224,8 @@ def _build(sources: List[BuildSource],
                     lambda path: read_py_file(path, cached_read, options.python_version),
                     options.show_absolute_path,
                     options.enabled_error_codes,
-                    options.disabled_error_codes)
+                    options.disabled_error_codes,
+                    options.many_errors_threshold)
     plugin, snapshot = load_plugins(options, errors, stdout, extra_plugins)
 
     # Add catch-all .gitignore to cache dir if we created it
@@ -406,7 +407,7 @@ def load_plugins_from_config(
             # Plugin paths can be relative to the config file location.
             plugin_path = os.path.join(os.path.dirname(options.config_file), plugin_path)
             if not os.path.isfile(plugin_path):
-                plugin_error("Can't find plugin '{}'".format(plugin_path))
+                plugin_error('Can\'t find plugin "{}"'.format(plugin_path))
             # Use an absolute path to avoid populating the cache entry
             # for 'tmp' during tests, since it will be different in
             # different tests.
@@ -416,21 +417,21 @@ def load_plugins_from_config(
             sys.path.insert(0, plugin_dir)
         elif re.search(r'[\\/]', plugin_path):
             fnam = os.path.basename(plugin_path)
-            plugin_error("Plugin '{}' does not have a .py extension".format(fnam))
+            plugin_error('Plugin "{}" does not have a .py extension'.format(fnam))
         else:
             module_name = plugin_path
 
         try:
             module = importlib.import_module(module_name)
         except Exception as exc:
-            plugin_error("Error importing plugin '{}': {}".format(plugin_path, exc))
+            plugin_error('Error importing plugin "{}": {}'.format(plugin_path, exc))
         finally:
             if plugin_dir is not None:
                 assert sys.path[0] == plugin_dir
                 del sys.path[0]
 
         if not hasattr(module, func_name):
-            plugin_error('Plugin \'{}\' does not define entry point function "{}"'.format(
+            plugin_error('Plugin "{}" does not define entry point function "{}"'.format(
                 plugin_path, func_name))
 
         try:
@@ -2448,7 +2449,9 @@ def find_module_and_diagnose(manager: BuildManager,
         # otherwise updating mypy can silently result in new false
         # negatives.
         global_ignore_missing_imports = manager.options.ignore_missing_imports
-        if top_level in legacy_bundled_packages and global_ignore_missing_imports:
+        if (top_level in legacy_bundled_packages
+                and global_ignore_missing_imports
+                and not options.ignore_missing_imports_per_module):
             ignore_missing_imports = False
 
         if skip_diagnose:
@@ -2546,7 +2549,8 @@ def module_not_found(manager: BuildManager, line: int, caller_state: State,
                       blocker=True)
         errors.raise_error()
     else:
-        msg, notes = reason.error_message_templates()
+        daemon = manager.options.fine_grained_incremental
+        msg, notes = reason.error_message_templates(daemon)
         pyver = '%d.%d' % manager.options.python_version
         errors.report(line, 0, msg.format(module=target, pyver=pyver), code=codes.IMPORT)
         top_level = target.partition('.')[0]
@@ -2554,7 +2558,7 @@ def module_not_found(manager: BuildManager, line: int, caller_state: State,
             if '{stub_dist}' in note:
                 note = note.format(stub_dist=legacy_bundled_packages[top_level])
             errors.report(line, 0, note, severity='note', only_once=True, code=codes.IMPORT)
-        if reason is ModuleNotFoundReason.STUBS_NOT_INSTALLED:
+        if reason is ModuleNotFoundReason.APPROVED_STUBS_NOT_INSTALLED:
             manager.missing_stub_packages.add(legacy_bundled_packages[top_level])
     errors.set_import_context(save_import_context)
 
@@ -2567,7 +2571,7 @@ def skipping_module(manager: BuildManager, line: int, caller_state: Optional[Sta
     manager.errors.set_import_context(caller_state.import_context)
     manager.errors.set_file(caller_state.xpath, caller_state.id)
     manager.errors.report(line, 0,
-                          "Import of '%s' ignored" % (id,),
+                          'Import of "%s" ignored' % (id,),
                           severity='error')
     manager.errors.report(line, 0,
                           "(Using --follow-imports=error, module not passed on command line)",
@@ -2583,7 +2587,7 @@ def skipping_ancestor(manager: BuildManager, id: str, path: str, ancestor_for: '
     # so we'd need to cache the decision.
     manager.errors.set_import_context([])
     manager.errors.set_file(ancestor_for.xpath, ancestor_for.id)
-    manager.errors.report(-1, -1, "Ancestor package '%s' ignored" % (id,),
+    manager.errors.report(-1, -1, 'Ancestor package "%s" ignored' % (id,),
                           severity='error', only_once=True)
     manager.errors.report(-1, -1,
                           "(Using --follow-imports=error, submodule passed on command line)",
@@ -2798,7 +2802,7 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
             manager.errors.set_file(st.xpath, st.id)
             manager.errors.report(
                 -1, -1,
-                "Duplicate module named '%s' (also at '%s')" % (st.id, graph[st.id].xpath),
+                'Duplicate module named "%s" (also at "%s")' % (st.id, graph[st.id].xpath),
                 blocker=True,
             )
             manager.errors.report(
@@ -2868,8 +2872,8 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
                         if newst_path in seen_files:
                             manager.errors.report(
                                 -1, 0,
-                                "Source file found twice under different module names: "
-                                "'{}' and '{}'".format(seen_files[newst_path].id, newst.id),
+                                'Source file found twice under different module names: '
+                                '"{}" and "{}"'.format(seen_files[newst_path].id, newst.id),
                                 blocker=True)
                             manager.errors.raise_error()
 
