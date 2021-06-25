@@ -36,6 +36,7 @@ from mypy.nodes import (
 )
 from mypy.literals import literal
 from mypy import nodes
+from mypy import operators
 import mypy.checker
 from mypy import types
 from mypy.sametypes import is_same_type
@@ -900,10 +901,12 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             args: actual argument expressions
             arg_kinds: contains nodes.ARG_* constant for each argument in args
                  describing whether the argument is positional, *arg, etc.
+            context: current expression context, used for inference.
             arg_names: names of arguments (optional)
             callable_node: associate the inferred callable type to this node,
                 if specified
-            arg_messages: TODO
+            arg_messages: utility for generating messages, can be swapped to suppress errors,
+                by default uses 'self.msg' to show errors
             callable_name: Fully-qualified name of the function/method to call,
                 or None if unavailable (examples: 'builtins.open', 'typing.Mapping.get')
             object_type: If callable_name refers to a method, the type of the object
@@ -2167,7 +2170,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     if right_radd_method is None:
                         return self.concat_tuples(proper_left_type, proper_right_type)
 
-        if e.op in nodes.op_methods:
+        if e.op in operators.op_methods:
             method = self.get_operator_method(e.op)
             result, method_type = self.check_op(method, left_type, e.right, e,
                                                 allow_reverse=True)
@@ -2232,7 +2235,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     self.msg.dangerous_comparison(left_type, cont_type, 'container', e)
                 else:
                     self.msg.add_errors(local_errors)
-            elif operator in nodes.op_methods:
+            elif operator in operators.op_methods:
                 method = self.get_operator_method(operator)
                 err_count = self.msg.errors.total_errors()
                 sub_result, method_type = self.check_op(method, left_type, right, e,
@@ -2360,7 +2363,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             # TODO also check for "from __future__ import division"
             return '__div__'
         else:
-            return nodes.op_methods[op]
+            return operators.op_methods[op]
 
     def check_method_call_by_name(self,
                                   method: str,
@@ -2535,7 +2538,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # which records tuples containing the method, base type, and the argument.
 
         bias_right = is_proper_subtype(right_type, left_type)
-        if op_name in nodes.op_methods_that_shortcut and is_same_type(left_type, right_type):
+        if op_name in operators.op_methods_that_shortcut and is_same_type(left_type, right_type):
             # When we do "A() + A()", for example, Python will only call the __add__ method,
             # never the __radd__ method.
             #
@@ -2573,8 +2576,8 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # When running Python 2, we might also try calling the __cmp__ method.
 
         is_python_2 = self.chk.options.python_version[0] == 2
-        if is_python_2 and op_name in nodes.ops_falling_back_to_cmp:
-            cmp_method = nodes.comparison_fallback_method
+        if is_python_2 and op_name in operators.ops_falling_back_to_cmp:
+            cmp_method = operators.comparison_fallback_method
             left_cmp_op = lookup_operator(cmp_method, left_type)
             right_cmp_op = lookup_operator(cmp_method, right_type)
 
@@ -2758,7 +2761,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         if method == '__div__' and self.chk.options.python_version[0] == 2:
             return '__rdiv__'
         else:
-            return nodes.reverse_op_methods[method]
+            return operators.reverse_op_methods[method]
 
     def check_boolean_op(self, e: OpExpr, context: Context) -> Type:
         """Type check a boolean operation ('and' or 'or')."""
@@ -2774,38 +2777,32 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         assert e.op in ('and', 'or')  # Checked by visit_op_expr
 
-        if e.op == 'and':
+        if e.right_always:
+            left_map, right_map = None, {}  # type: mypy.checker.TypeMap, mypy.checker.TypeMap
+        elif e.right_unreachable:
+            left_map, right_map = {}, None
+        elif e.op == 'and':
             right_map, left_map = self.chk.find_isinstance_check(e.left)
-            restricted_left_type = false_only(left_type)
-            result_is_left = not left_type.can_be_true
         elif e.op == 'or':
             left_map, right_map = self.chk.find_isinstance_check(e.left)
-            restricted_left_type = true_only(left_type)
-            result_is_left = not left_type.can_be_false
 
         # If left_map is None then we know mypy considers the left expression
         # to be redundant.
-        #
-        # Note that we perform these checks *before* we take into account
-        # the analysis from the semanal phase below. We assume that nodes
-        # marked as unreachable during semantic analysis were done so intentionally.
-        # So, we shouldn't report an error.
-        if codes.REDUNDANT_EXPR in self.chk.options.enabled_error_codes:
-            if left_map is None:
-                self.msg.redundant_left_operand(e.op, e.left)
+        if (
+            codes.REDUNDANT_EXPR in self.chk.options.enabled_error_codes
+            and left_map is None
+            # don't report an error if it's intentional
+            and not e.right_always
+        ):
+            self.msg.redundant_left_operand(e.op, e.left)
 
-        # Note that we perform these checks *before* we take into account
-        # the analysis from the semanal phase below. We assume that nodes
-        # marked as unreachable during semantic analysis were done so intentionally.
-        # So, we shouldn't report an error.
-        if self.chk.should_report_unreachable_issues():
-            if right_map is None:
-                self.msg.unreachable_right_operand(e.op, e.right)
-
-        if e.right_unreachable:
-            right_map = None
-        elif e.right_always:
-            left_map = None
+        if (
+            self.chk.should_report_unreachable_issues()
+            and right_map is None
+            # don't report an error if it's intentional
+            and not e.right_unreachable
+        ):
+            self.msg.unreachable_right_operand(e.op, e.right)
 
         # If right_map is None then we know mypy considers the right branch
         # to be unreachable and therefore any errors found in the right branch
@@ -2821,6 +2818,13 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             # The boolean expression is statically known to be the right value
             assert right_map is not None  # find_isinstance_check guarantees this
             return right_type
+
+        if e.op == 'and':
+            restricted_left_type = false_only(left_type)
+            result_is_left = not left_type.can_be_true
+        elif e.op == 'or':
+            restricted_left_type = true_only(left_type)
+            result_is_left = not left_type.can_be_false
 
         if isinstance(restricted_left_type, UninhabitedType):
             # The left operand can never be the result
@@ -2862,7 +2866,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         if op == 'not':
             result = self.bool_type()  # type: Type
         else:
-            method = nodes.unary_op_methods[op]
+            method = operators.unary_op_methods[op]
             result, method_type = self.check_method_call_by_name(method, operand_type, [], [], e)
             e.method_type = method_type
         return result
@@ -4528,9 +4532,9 @@ def is_operator_method(fullname: Optional[str]) -> bool:
         return False
     short_name = fullname.split('.')[-1]
     return (
-        short_name in nodes.op_methods.values() or
-        short_name in nodes.reverse_op_methods.values() or
-        short_name in nodes.unary_op_methods.values())
+        short_name in operators.op_methods.values() or
+        short_name in operators.reverse_op_methods.values() or
+        short_name in operators.unary_op_methods.values())
 
 
 def get_partial_instance_type(t: Optional[Type]) -> Optional[PartialType]:

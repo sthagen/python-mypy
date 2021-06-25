@@ -284,6 +284,17 @@ def get_prefix(fullname: str) -> str:
     return fullname.rsplit('.', 1)[0]
 
 
+def get_top_two_prefixes(fullname: str) -> Tuple[str, str]:
+    """Return one and two component prefixes of a fully qualified name.
+
+    Given 'a.b.c.d', return ('a', 'a.b').
+
+    If fullname has only one component, return (fullname, fullname).
+    """
+    components = fullname.split('.', 3)
+    return components[0], '.'.join(components[:2])
+
+
 def correct_relative_import(cur_mod_id: str,
                             relative: int,
                             target: str,
@@ -382,13 +393,9 @@ def get_unique_redefinition_name(name: str, existing: Container[str]) -> str:
 def check_python_version(program: str) -> None:
     """Report issues with the Python used to run mypy, dmypy, or stubgen"""
     # Check for known bad Python versions.
-    if sys.version_info[:2] < (3, 5):
-        sys.exit("Running {name} with Python 3.4 or lower is not supported; "
-                 "please upgrade to 3.5 or newer".format(name=program))
-    # this can be deleted once we drop support for 3.5
-    if sys.version_info[:3] == (3, 5, 0):
-        sys.exit("Running {name} with Python 3.5.0 is not supported; "
-                 "please upgrade to 3.5.1 or newer".format(name=program))
+    if sys.version_info[:2] < (3, 6):
+        sys.exit("Running {name} with Python 3.5 or lower is not supported; "
+                 "please upgrade to 3.6 or newer".format(name=program))
 
 
 def count_stats(errors: List[str]) -> Tuple[int, int]:

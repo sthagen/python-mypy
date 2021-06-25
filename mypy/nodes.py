@@ -608,6 +608,8 @@ class FuncItem(FuncBase):
                  'expanded',  # Variants of function with type variables with values expanded
                  )
 
+    __deletable__ = ('arguments', 'max_pos', 'min_args')
+
     def __init__(self,
                  arguments: List[Argument],
                  body: 'Block',
@@ -1632,100 +1634,6 @@ class AssignmentExpr(Expression):
         return visitor.visit_assignment_expr(self)
 
 
-# Map from binary operator id to related method name (in Python 3).
-op_methods = {
-    '+': '__add__',
-    '-': '__sub__',
-    '*': '__mul__',
-    '/': '__truediv__',
-    '%': '__mod__',
-    'divmod': '__divmod__',
-    '//': '__floordiv__',
-    '**': '__pow__',
-    '@': '__matmul__',
-    '&': '__and__',
-    '|': '__or__',
-    '^': '__xor__',
-    '<<': '__lshift__',
-    '>>': '__rshift__',
-    '==': '__eq__',
-    '!=': '__ne__',
-    '<': '__lt__',
-    '>=': '__ge__',
-    '>': '__gt__',
-    '<=': '__le__',
-    'in': '__contains__',
-}  # type: Final
-
-op_methods_to_symbols = {v: k for (k, v) in op_methods.items()}  # type: Final
-op_methods_to_symbols['__div__'] = '/'
-
-comparison_fallback_method = '__cmp__'  # type: Final
-ops_falling_back_to_cmp = {'__ne__', '__eq__',
-                           '__lt__', '__le__',
-                           '__gt__', '__ge__'}  # type: Final
-
-
-ops_with_inplace_method = {
-    '+', '-', '*', '/', '%', '//', '**', '@', '&', '|', '^', '<<', '>>'}  # type: Final
-
-inplace_operator_methods = set(
-    '__i' + op_methods[op][2:] for op in ops_with_inplace_method)  # type: Final
-
-reverse_op_methods = {
-    '__add__': '__radd__',
-    '__sub__': '__rsub__',
-    '__mul__': '__rmul__',
-    '__truediv__': '__rtruediv__',
-    '__mod__': '__rmod__',
-    '__divmod__': '__rdivmod__',
-    '__floordiv__': '__rfloordiv__',
-    '__pow__': '__rpow__',
-    '__matmul__': '__rmatmul__',
-    '__and__': '__rand__',
-    '__or__': '__ror__',
-    '__xor__': '__rxor__',
-    '__lshift__': '__rlshift__',
-    '__rshift__': '__rrshift__',
-    '__eq__': '__eq__',
-    '__ne__': '__ne__',
-    '__lt__': '__gt__',
-    '__ge__': '__le__',
-    '__gt__': '__lt__',
-    '__le__': '__ge__',
-}  # type: Final
-
-# Suppose we have some class A. When we do A() + A(), Python will only check
-# the output of A().__add__(A()) and skip calling the __radd__ method entirely.
-# This shortcut is used only for the following methods:
-op_methods_that_shortcut = {
-    '__add__',
-    '__sub__',
-    '__mul__',
-    '__div__',
-    '__truediv__',
-    '__mod__',
-    '__divmod__',
-    '__floordiv__',
-    '__pow__',
-    '__matmul__',
-    '__and__',
-    '__or__',
-    '__xor__',
-    '__lshift__',
-    '__rshift__',
-}  # type: Final
-
-normal_from_reverse_op = dict((m, n) for n, m in reverse_op_methods.items())  # type: Final
-reverse_op_method_set = set(reverse_op_methods.values())  # type: Final
-
-unary_op_methods = {
-    '-': '__neg__',
-    '+': '__pos__',
-    '~': '__invert__',
-}  # type: Final
-
-
 class OpExpr(Expression):
     """Binary operation (other than . or [] or comparison operators,
     which have specific nodes)."""
@@ -1735,9 +1643,9 @@ class OpExpr(Expression):
     right = None  # type: Expression
     # Inferred type for the operator method type (when relevant).
     method_type = None  # type: Optional[mypy.types.Type]
-    # Is the right side going to be evaluated every time?
+    # Per static analysis only: Is the right side going to be evaluated every time?
     right_always = False
-    # Is the right side unreachable?
+    # Per static analysis only: Is the right side unreachable?
     right_unreachable = False
 
     def __init__(self, op: str, left: Expression, right: Expression) -> None:
@@ -2348,6 +2256,7 @@ class TypeInfo(SymbolNode):
     is_protocol = False                    # Is this a protocol class?
     runtime_protocol = False               # Does this protocol support isinstance checks?
     abstract_attributes = None  # type: List[str]
+    deletable_attributes = None  # type: List[str]  # Used by mypyc only
 
     # The attributes 'assuming' and 'assuming_proper' represent structural subtype matrices.
     #
@@ -2450,6 +2359,7 @@ class TypeInfo(SymbolNode):
         self._fullname = defn.fullname
         self.is_abstract = False
         self.abstract_attributes = []
+        self.deletable_attributes = []
         self.assuming = []
         self.assuming_proper = []
         self.inferring = []

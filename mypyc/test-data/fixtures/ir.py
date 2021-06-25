@@ -177,7 +177,7 @@ class dict(Mapping[K, V]):
     def items(self) -> Iterable[Tuple[K, V]]: pass
     def clear(self) -> None: pass
     def copy(self) -> Dict[K, V]: pass
-    def setdefault(self, k: K, v: Optional[V] = None) -> Optional[V]: pass
+    def setdefault(self, key: K, val: V = ...) -> V: pass
 
 class set(Generic[T]):
     def __init__(self, i: Optional[Iterable[T]] = None) -> None: pass
@@ -192,6 +192,12 @@ class set(Generic[T]):
     def __or__(self, s: Set[S]) -> Set[Union[T, S]]: ...
 
 class slice: pass
+
+class range(Iterable[int]):
+    def __init__(self, x: int, y: int = ..., z: int = ...) -> None: pass
+    def __iter__(self) -> Iterator[int]: pass
+    def __len__(self) -> int: pass
+    def __next__(self) -> int: pass
 
 class property:
     def __init__(self, fget: Optional[Callable[[Any], Any]] = ...,
@@ -223,6 +229,8 @@ class ValueError(Exception): pass
 
 class AttributeError(Exception): pass
 
+class ImportError(Exception): pass
+
 class NameError(Exception): pass
 
 class LookupError(Exception): pass
@@ -245,7 +253,6 @@ def id(o: object) -> int: pass
 # This type is obviously wrong but the test stubs don't have Sized anymore
 def len(o: object) -> int: pass
 def print(*object) -> None: pass
-def range(x: int, y: int = ..., z: int = ...) -> Iterator[int]: pass
 def isinstance(x: object, t: object) -> bool: pass
 def iter(i: Iterable[T]) -> Iterator[T]: pass
 @overload

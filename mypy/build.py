@@ -35,7 +35,7 @@ from mypy.indirection import TypeIndirectionVisitor
 from mypy.errors import Errors, CompileError, ErrorInfo, report_internal_error
 from mypy.util import (
     DecodeError, decode_python_encoding, is_sub_path, get_mypy_comments, module_prefix,
-    read_py_file, hash_digest, is_typeshed_file, is_stub_package_file
+    read_py_file, hash_digest, is_typeshed_file, is_stub_package_file, get_top_two_prefixes
 )
 if TYPE_CHECKING:
     from mypy.report import Reports  # Avoid unconditional slow import
@@ -58,7 +58,7 @@ from mypy.typestate import TypeState, reset_global_state
 from mypy.renaming import VariableRenameVisitor
 from mypy.config_parser import parse_mypy_comments
 from mypy.freetree import free_tree
-from mypy.stubinfo import legacy_bundled_packages
+from mypy.stubinfo import legacy_bundled_packages, is_legacy_bundled_package
 from mypy import errorcodes as codes
 
 
@@ -1091,7 +1091,7 @@ def _load_json_file(file: str, manager: BuildManager,
         manager.trace(log_success + data.rstrip())
     try:
         result = json.loads(data)
-    except ValueError:  # TODO: JSONDecodeError in 3.5
+    except json.JSONDecodeError:
         manager.errors.set_file(file, None)
         manager.errors.report(-1, -1,
                               "Error reading JSON file;"
@@ -2443,15 +2443,18 @@ def find_module_and_diagnose(manager: BuildManager,
         # search path or the module has not been installed.
 
         ignore_missing_imports = options.ignore_missing_imports
-        top_level = file_id.partition('.')[0]
+        top_level, second_level = get_top_two_prefixes(file_id)
         # Don't honor a global (not per-module) ignore_missing_imports
         # setting for modules that used to have bundled stubs, as
         # otherwise updating mypy can silently result in new false
-        # negatives.
+        # negatives. (Unless there are stubs but they are incomplete.)
         global_ignore_missing_imports = manager.options.ignore_missing_imports
-        if (top_level in legacy_bundled_packages
+        py_ver = options.python_version[0]
+        if ((is_legacy_bundled_package(top_level, py_ver)
+                or is_legacy_bundled_package(second_level, py_ver))
                 and global_ignore_missing_imports
-                and not options.ignore_missing_imports_per_module):
+                and not options.ignore_missing_imports_per_module
+                and result is ModuleNotFoundReason.APPROVED_STUBS_NOT_INSTALLED):
             ignore_missing_imports = False
 
         if skip_diagnose:
@@ -2553,13 +2556,15 @@ def module_not_found(manager: BuildManager, line: int, caller_state: State,
         msg, notes = reason.error_message_templates(daemon)
         pyver = '%d.%d' % manager.options.python_version
         errors.report(line, 0, msg.format(module=target, pyver=pyver), code=codes.IMPORT)
-        top_level = target.partition('.')[0]
+        top_level, second_level = get_top_two_prefixes(target)
+        if second_level in legacy_bundled_packages:
+            top_level = second_level
         for note in notes:
             if '{stub_dist}' in note:
-                note = note.format(stub_dist=legacy_bundled_packages[top_level])
+                note = note.format(stub_dist=legacy_bundled_packages[top_level].name)
             errors.report(line, 0, note, severity='note', only_once=True, code=codes.IMPORT)
         if reason is ModuleNotFoundReason.APPROVED_STUBS_NOT_INSTALLED:
-            manager.missing_stub_packages.add(legacy_bundled_packages[top_level])
+            manager.missing_stub_packages.add(legacy_bundled_packages[top_level].name)
     errors.set_import_context(save_import_context)
 
 

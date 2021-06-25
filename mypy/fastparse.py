@@ -660,7 +660,7 @@ class ASTConverter:
                        ) -> List[Argument]:
         new_args = []
         names = []  # type: List[ast3.arg]
-        args_args = getattr(args, "posonlyargs", []) + args.args
+        args_args = getattr(args, "posonlyargs", cast(List[ast3.arg], [])) + args.args
         args_defaults = args.defaults
         num_no_defaults = len(args_args) - len(args_defaults)
         # positional arguments without defaults
@@ -1357,7 +1357,7 @@ class TypeConverter:
 
     def visit_raw_str(self, s: str) -> Type:
         # An escape hatch that allows the AST walker in fastparse2 to
-        # directly hook into the Python 3.5 type converter in some cases
+        # directly hook into the Python 3 type converter in some cases
         # without needing to create an intermediary `Str` object.
         _, typ = parse_type_comment(s.strip(),
                                     self.line,
