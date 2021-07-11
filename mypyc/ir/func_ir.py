@@ -3,7 +3,7 @@
 from typing import List, Optional, Sequence
 from typing_extensions import Final
 
-from mypy.nodes import FuncDef, Block, ARG_POS, ARG_OPT, ARG_NAMED_OPT
+from mypy.nodes import FuncDef, Block, ArgKind, ARG_POS
 
 from mypyc.common import JsonDict
 from mypyc.ir.ops import (
@@ -19,27 +19,27 @@ class RuntimeArg:
     Argument kind is one of ARG_* constants defined in mypy.nodes.
     """
 
-    def __init__(self, name: str, typ: RType, kind: int = ARG_POS) -> None:
+    def __init__(self, name: str, typ: RType, kind: ArgKind = ARG_POS) -> None:
         self.name = name
         self.type = typ
         self.kind = kind
 
     @property
     def optional(self) -> bool:
-        return self.kind == ARG_OPT or self.kind == ARG_NAMED_OPT
+        return self.kind.is_optional()
 
     def __repr__(self) -> str:
         return 'RuntimeArg(name=%s, type=%s, optional=%r)' % (self.name, self.type, self.optional)
 
     def serialize(self) -> JsonDict:
-        return {'name': self.name, 'type': self.type.serialize(), 'kind': self.kind}
+        return {'name': self.name, 'type': self.type.serialize(), 'kind': int(self.kind.value)}
 
     @classmethod
     def deserialize(cls, data: JsonDict, ctx: DeserMaps) -> 'RuntimeArg':
         return RuntimeArg(
             data['name'],
             deserialize_type(data['type'], ctx),
-            data['kind'],
+            ArgKind(data['kind']),
         )
 
 
@@ -260,7 +260,7 @@ def all_values_full(args: List[Register], blocks: List[BasicBlock]) -> List[Valu
     for block in blocks:
         for op in block.ops:
             for source in op.sources():
-                # Look for unitialized registers that are accessed. Ignore
+                # Look for uninitialized registers that are accessed. Ignore
                 # non-registers since we don't allow ops outside basic blocks.
                 if isinstance(source, Register) and source not in seen_registers:
                     values.append(source)
