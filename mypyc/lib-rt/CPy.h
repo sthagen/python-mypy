@@ -285,7 +285,7 @@ static inline CPyTagged CPyObject_Size(PyObject *obj) {
 static void CPy_LogGetAttr(const char *method, PyObject *obj, PyObject *attr) {
     PyObject *module = PyImport_ImportModule("getattr_hook");
     if (module) {
-        PyObject *res = PyObject_CallMethod(module, method, "OO", obj, attr);
+        PyObject *res = PyObject_CallMethodObjArgs(module, method, obj, attr, NULL);
         Py_XDECREF(res);
         Py_DECREF(module);
     }
@@ -399,6 +399,9 @@ Py_ssize_t CPyStr_Size_size_t(PyObject *str);
 
 // Bytes operations
 
+
+PyObject *CPyBytes_Concat(PyObject *a, PyObject *b);
+PyObject *CPyBytes_Join(PyObject *sep, PyObject *iter);
 
 
 // Set operations
@@ -550,7 +553,7 @@ int CPyStatics_Initialize(PyObject **statics,
                           const int *tuples);
 PyObject *CPy_Super(PyObject *builtins, PyObject *self);
 PyObject *CPy_CallReverseOpMethod(PyObject *left, PyObject *right, const char *op,
-                                  const char *method);
+                                  _Py_Identifier *method);
 
 PyObject *CPyImport_ImportFrom(PyObject *module, PyObject *package_name,
                                PyObject *import_name, PyObject *as_name);
