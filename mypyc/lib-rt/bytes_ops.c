@@ -5,6 +5,31 @@
 #include <Python.h>
 #include "CPy.h"
 
+// Returns -1 on error, 0 on inequality, 1 on equality.
+// 
+// Falls back to PyObject_RichCompareBool.
+int CPyBytes_Compare(PyObject *left, PyObject *right) {
+    if (PyBytes_CheckExact(left) && PyBytes_CheckExact(right)) {
+        if (left == right) {
+            return 1;
+        }
+
+        // Adapted from cpython internal implementation of bytes_compare.
+        Py_ssize_t len = Py_SIZE(left);
+        if (Py_SIZE(right) != len) {
+            return 0;
+        }
+        PyBytesObject *left_b = (PyBytesObject *)left;
+        PyBytesObject *right_b = (PyBytesObject *)right;
+        if (left_b->ob_sval[0] != right_b->ob_sval[0]) {
+            return 0;
+        }
+
+        return memcmp(left_b->ob_sval, right_b->ob_sval, len) == 0;
+    }
+    return PyObject_RichCompareBool(left, right, Py_EQ);
+}
+
 CPyTagged CPyBytes_GetItem(PyObject *o, CPyTagged index) {
     if (CPyTagged_CheckShort(index)) {
         Py_ssize_t n = CPyTagged_ShortAsSsize_t(index);
@@ -79,4 +104,40 @@ PyObject *CPyBytes_Join(PyObject *sep, PyObject *iter) {
         _Py_IDENTIFIER(join);
         return _PyObject_CallMethodIdOneArg(sep, &PyId_join, iter);
     }
+}
+
+PyObject *CPyBytes_Build(Py_ssize_t len, ...) {
+    Py_ssize_t i;
+    Py_ssize_t sz = 0;
+
+    va_list args;
+    va_start(args, len);
+    for (i = 0; i < len; i++) {
+        PyObject *item = va_arg(args, PyObject *);
+        size_t add_sz = ((PyVarObject *)item)->ob_size;
+        // Using size_t to avoid overflow during arithmetic calculation
+        if (add_sz > (size_t)(PY_SSIZE_T_MAX - sz)) {
+            PyErr_SetString(PyExc_OverflowError,
+                            "join() result is too long for a Python bytes");
+            return NULL;
+        }
+        sz += add_sz;
+    }
+    va_end(args);
+
+    PyBytesObject *ret = (PyBytesObject *)PyBytes_FromStringAndSize(NULL, sz);
+    if (ret != NULL) {
+        char *res_data = ret->ob_sval;
+        va_start(args, len);
+        for (i = 0; i < len; i++) {
+            PyObject *item = va_arg(args, PyObject *);
+            Py_ssize_t item_sz = ((PyVarObject *)item)->ob_size;
+            memcpy(res_data, ((PyBytesObject *)item)->ob_sval, item_sz);
+            res_data += item_sz;
+        }
+        va_end(args);
+        assert(res_data == ret->ob_sval + ((PyVarObject *)ret)->ob_size);
+    }
+
+    return (PyObject *)ret;
 }
