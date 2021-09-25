@@ -17,6 +17,7 @@ The simplest way to narrow a type is to use one of the supported expressions:
 - :py:func:`isinstance` like in ``isinstance(obj, float)`` will narrow ``obj`` to have ``float`` type
 - :py:func:`issubclass` like in ``issubclass(cls, MyClass)`` will narrow ``cls`` to be ``Type[MyClass]``
 - :py:func:`type` like in ``type(obj) is int`` will narrow ``obj`` to have ``int`` type
+- :py:func:`callable` like in ``callable(obj)`` will narrow object to callable type
 
 Type narrowing is contextual. For example, based on the condition, mypy will narrow an expression only within an ``if`` branch:
 
@@ -37,7 +38,8 @@ Type narrowing is contextual. For example, based on the condition, mypy will nar
       # Back outside of the ``if`` statement, the type isn't narrowed:
       reveal_type(arg)  # Revealed type: "builtins.object"
 
-Mypy understands the implications `return` or exception raising can have for what type an object could be:
+Mypy understands the implications ``return`` or exception raising can have
+for what type an object could be:
 
 .. code-block:: python
 
@@ -55,24 +57,6 @@ We can also use ``assert`` to narrow types in the same context:
   def function(arg: Any):
       assert isinstance(arg, int)
       reveal_type(arg)  # Revealed type: "builtins.int"
-
-Mypy can also use :py:func:`issubclass`
-for better type inference when working with types and metaclasses:
-
-.. code-block:: python
-
-   class MyCalcMeta(type):
-       @classmethod
-       def calc(cls) -> int:
-           ...
-
-   def f(o: object) -> None:
-       t = type(o)  # We must use a variable here
-       reveal_type(t)  # Revealed type is "builtins.type"
-
-       if issubtype(t, MyCalcMeta):  # `issubtype(type(o), MyCalcMeta)` won't work
-           reveal_type(t)  # Revealed type is "Type[MyCalcMeta]"
-           t.calc()  # Okay
 
 .. note::
 
@@ -99,6 +83,57 @@ for better type inference when working with types and metaclasses:
      reveal_type(x)  # Revealed type is "builtins.int"
      print(x + '!')  # Typechecks with `mypy`, but fails in runtime.
 
+issubclass
+~~~~~~~~~~
+
+Mypy can also use :py:func:`issubclass`
+for better type inference when working with types and metaclasses:
+
+.. code-block:: python
+
+   class MyCalcMeta(type):
+       @classmethod
+       def calc(cls) -> int:
+           ...
+
+   def f(o: object) -> None:
+       t = type(o)  # We must use a variable here
+       reveal_type(t)  # Revealed type is "builtins.type"
+
+       if issubtype(t, MyCalcMeta):  # `issubtype(type(o), MyCalcMeta)` won't work
+           reveal_type(t)  # Revealed type is "Type[MyCalcMeta]"
+           t.calc()  # Okay
+
+callable
+~~~~~~~~
+
+Mypy knows what types are callable and which ones are not during type checking.
+So, we know what ``callable()`` will return. For example:
+
+.. code-block:: python
+
+  from typing import Callable
+
+  x: Callable[[], int]
+
+  if callable(x):
+      reveal_type(x)  # N: Revealed type is "def () -> builtins.int"
+  else:
+      ...  # Will never be executed and will raise error with `--warn-unreachable`
+
+``callable`` function can even split ``Union`` type
+for callable and non-callable parts:
+
+.. code-block:: python
+
+  from typing import Callable, Union
+
+  x: Union[int, Callable[[], int]]
+
+  if callable(x):
+      reveal_type(x)  # N: Revealed type is "def () -> builtins.int"
+  else:
+      reveal_type(x)  # N: Revealed type is "builtins.int"
 
 .. _casts:
 
@@ -295,3 +330,35 @@ TypeGuards as methods
 
     def is_child(instance: Parent) -> TypeGuard[Child]:
         return isinstance(instance, Child)
+
+Assignment expressions as TypeGuards
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes you might need to create a new variable and narrow it
+to some specific type at the same time.
+This can be achieved by using ``TypeGuard`` together
+with `:= operator <https://docs.python.org/3/whatsnew/3.8.html#assignment-expressions>`_.
+
+.. code-block:: python
+
+  from typing import TypeGuard  # use `typing_extensions` for `python<3.10`
+
+  def is_float(a: object) -> TypeGuard[float]:
+      return isinstance(a, float)
+
+  def main(a: object) -> None:
+      if is_float(x := a):
+          reveal_type(x)  # N: Revealed type is 'builtins.float'
+          reveal_type(a)  # N: Revealed type is 'builtins.object'
+      reveal_type(x)  # N: Revealed type is 'builtins.object'
+      reveal_type(a)  # N: Revealed type is 'builtins.object'
+
+What happens here?
+
+1. We create a new variable ``x`` and assign a value of ``a`` to it
+2. We run ``is_float()`` type guard on ``x``
+3. It narrows ``x`` to be ``float`` in the ``if`` context and does not touch ``a``
+
+.. note::
+
+  The same will work with ``isinstance(x := a, float)`` as well.

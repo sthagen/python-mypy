@@ -953,18 +953,17 @@ class SemanticAnalyzer(NodeVisitor[None],
                 a = self.type_analyzer()
                 a.bind_function_type_variables(cast(CallableType, defn.type), defn)
             self.function_stack.append(defn)
-            self.enter(defn)
-            for arg in defn.arguments:
-                self.add_local(arg.variable, defn)
+            with self.enter(defn):
+                for arg in defn.arguments:
+                    self.add_local(arg.variable, defn)
 
-            # The first argument of a non-static, non-class method is like 'self'
-            # (though the name could be different), having the enclosing class's
-            # instance type.
-            if is_method and not defn.is_static and not defn.is_class and defn.arguments:
-                defn.arguments[0].variable.is_self = True
+                # The first argument of a non-static, non-class method is like 'self'
+                # (though the name could be different), having the enclosing class's
+                # instance type.
+                if is_method and not defn.is_static and not defn.is_class and defn.arguments:
+                    defn.arguments[0].variable.is_self = True
 
-            defn.body.accept(self)
-            self.leave()
+                defn.body.accept(self)
             self.function_stack.pop()
 
     def check_classvar_in_signature(self, typ: ProperType) -> None:
@@ -2745,7 +2744,7 @@ class SemanticAnalyzer(NodeVisitor[None],
                 self.msg.cant_assign_to_final(name, self.type is not None, lvalue)
 
         kind = self.current_symbol_kind()
-        names = self.current_symbol_table()
+        names = self.current_symbol_table(escape_comprehensions=escape_comprehensions)
         existing = names.get(name)
 
         outer = self.is_global_or_nonlocal(name)
@@ -4027,18 +4026,16 @@ class SemanticAnalyzer(NodeVisitor[None],
         expr.generator.accept(self)
 
     def visit_dictionary_comprehension(self, expr: DictionaryComprehension) -> None:
-        self.enter(expr)
-        self.analyze_comp_for(expr)
-        expr.key.accept(self)
-        expr.value.accept(self)
-        self.leave()
+        with self.enter(expr):
+            self.analyze_comp_for(expr)
+            expr.key.accept(self)
+            expr.value.accept(self)
         self.analyze_comp_for_2(expr)
 
     def visit_generator_expr(self, expr: GeneratorExpr) -> None:
-        self.enter(expr)
-        self.analyze_comp_for(expr)
-        expr.left_expr.accept(self)
-        self.leave()
+        with self.enter(expr):
+            self.analyze_comp_for(expr)
+            expr.left_expr.accept(self)
         self.analyze_comp_for_2(expr)
 
     def analyze_comp_for(self, expr: Union[GeneratorExpr,
@@ -4772,7 +4769,9 @@ class SemanticAnalyzer(NodeVisitor[None],
         else:
             return self.cur_mod_id + '.' + name
 
-    def enter(self, function: Union[FuncItem, GeneratorExpr, DictionaryComprehension]) -> None:
+    @contextmanager
+    def enter(self,
+              function: Union[FuncItem, GeneratorExpr, DictionaryComprehension]) -> Iterator[None]:
         """Enter a function, generator or comprehension scope."""
         names = self.saved_locals.setdefault(function, SymbolTable())
         self.locals.append(names)
@@ -4783,14 +4782,15 @@ class SemanticAnalyzer(NodeVisitor[None],
         # -1 since entering block will increment this to 0.
         self.block_depth.append(-1)
         self.missing_names.append(set())
-
-    def leave(self) -> None:
-        self.locals.pop()
-        self.is_comprehension_stack.pop()
-        self.global_decls.pop()
-        self.nonlocal_decls.pop()
-        self.block_depth.pop()
-        self.missing_names.pop()
+        try:
+            yield
+        finally:
+            self.locals.pop()
+            self.is_comprehension_stack.pop()
+            self.global_decls.pop()
+            self.nonlocal_decls.pop()
+            self.block_depth.pop()
+            self.missing_names.pop()
 
     def is_func_scope(self) -> bool:
         return self.locals[-1] is not None
@@ -4953,6 +4953,18 @@ class SemanticAnalyzer(NodeVisitor[None],
         """Does name look like reference to a definition in the current module?"""
         return self.is_defined_in_current_module(name) or '.' not in name
 
+    def in_checked_function(self) -> bool:
+        """Should we type-check the current function?
+
+        - Yes if --check-untyped-defs is set.
+        - Yes outside functions.
+        - Yes in annotated functions.
+        - No otherwise.
+        """
+        return (self.options.check_untyped_defs
+                or not self.function_stack
+                or not self.function_stack[-1].is_dynamic())
+
     def fail(self,
              msg: str,
              ctx: Context,
@@ -4960,10 +4972,7 @@ class SemanticAnalyzer(NodeVisitor[None],
              *,
              code: Optional[ErrorCode] = None,
              blocker: bool = False) -> None:
-        if (not serious and
-                not self.options.check_untyped_defs and
-                self.function_stack and
-                self.function_stack[-1].is_dynamic()):
+        if not serious and not self.in_checked_function():
             return
         # In case it's a bug and we don't really have context
         assert ctx is not None, msg
@@ -4973,9 +4982,7 @@ class SemanticAnalyzer(NodeVisitor[None],
         self.fail(msg, ctx, blocker=True)
 
     def note(self, msg: str, ctx: Context, code: Optional[ErrorCode] = None) -> None:
-        if (not self.options.check_untyped_defs and
-                self.function_stack and
-                self.function_stack[-1].is_dynamic()):
+        if not self.in_checked_function():
             return
         self.errors.report(ctx.get_line(), ctx.get_column(), msg, severity='note', code=code)
 
