@@ -69,7 +69,7 @@ from mypy import errorcodes as codes
 DEBUG_FINE_GRAINED: Final = False
 
 # These modules are special and should always come from typeshed.
-CORE_BUILTIN_MODULES = {
+CORE_BUILTIN_MODULES: Final = {
     'builtins',
     'typing',
     'types',
@@ -2178,8 +2178,11 @@ class State:
         if not self._type_checker:
             assert self.tree is not None, "Internal error: must be called on parsed file only"
             manager = self.manager
-            self._type_checker = TypeChecker(manager.errors, manager.modules, self.options,
-                                             self.tree, self.xpath, manager.plugin)
+            self._type_checker = TypeChecker(
+                manager.errors, manager.modules, self.options,
+                self.tree, self.xpath, manager.plugin,
+                self.manager.semantic_analyzer.future_import_flags,
+            )
         return self._type_checker
 
     def type_map(self) -> Dict[Expression, Type]:
