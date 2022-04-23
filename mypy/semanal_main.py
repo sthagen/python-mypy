@@ -25,14 +25,14 @@ will be incomplete.
 """
 
 from typing import List, Tuple, Optional, Union, Callable
-from typing_extensions import TYPE_CHECKING, Final
+from typing_extensions import TYPE_CHECKING, Final, TypeAlias as _TypeAlias
 
 from mypy.backports import nullcontext
 from mypy.nodes import (
     MypyFile, TypeInfo, FuncDef, Decorator, OverloadedFuncDef, Var
 )
 from mypy.semanal_typeargs import TypeArgumentAnalyzer
-from mypy.state import strict_optional_set
+import mypy.state
 from mypy.semanal import (
     SemanticAnalyzer, apply_semantic_analyzer_patches, remove_imported_names_from_symtable
 )
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from mypy.build import Graph, State
 
 
-Patches = List[Tuple[int, Callable[[], None]]]
+Patches: _TypeAlias = List[Tuple[int, Callable[[], None]]]
 
 
 # If we perform this many iterations, raise an exception since we are likely stuck.
@@ -249,7 +249,7 @@ def process_top_level_function(analyzer: 'SemanticAnalyzer',
     """Analyze single top-level function or method.
 
     Process the body of the function (including nested functions) again and again,
-    until all names have been resolved (ot iteration limit reached).
+    until all names have been resolved (or iteration limit reached).
     """
     # We need one more iteration after incomplete is False (e.g. to report errors, if any).
     final_iteration = False
@@ -307,7 +307,7 @@ def semantic_analyze_target(target: str,
     Return tuple with these items:
     - list of deferred targets
     - was some definition incomplete (need to run another pass)
-    - were any new names were defined (or placeholders replaced)
+    - were any new names defined (or placeholders replaced)
     """
     state.manager.processed_targets.append(target)
     tree = state.tree
@@ -356,7 +356,7 @@ def check_type_arguments(graph: 'Graph', scc: List[str], errors: Errors) -> None
                                         state.options,
                                         is_typeshed_file(state.path or ''))
         with state.wrap_context():
-            with strict_optional_set(state.options.strict_optional):
+            with mypy.state.state.strict_optional_set(state.options.strict_optional):
                 state.tree.accept(analyzer)
 
 
@@ -371,7 +371,7 @@ def check_type_arguments_in_targets(targets: List[FineGrainedDeferredNode], stat
                                     state.options,
                                     is_typeshed_file(state.path or ''))
     with state.wrap_context():
-        with strict_optional_set(state.options.strict_optional):
+        with mypy.state.state.strict_optional_set(state.options.strict_optional):
             for target in targets:
                 func: Optional[Union[FuncDef, OverloadedFuncDef]] = None
                 if isinstance(target.node, (FuncDef, OverloadedFuncDef)):

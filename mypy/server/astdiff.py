@@ -54,12 +54,13 @@ from typing import Set, Dict, Tuple, Optional, Sequence, Union
 
 from mypy.nodes import (
     SymbolTable, TypeInfo, Var, SymbolNode, Decorator, TypeVarExpr, TypeAlias,
-    FuncBase, OverloadedFuncDef, FuncItem, MypyFile, UNBOUND_IMPORTED
+    FuncBase, OverloadedFuncDef, FuncItem, MypyFile, ParamSpecExpr, UNBOUND_IMPORTED
 )
 from mypy.types import (
     Type, TypeVisitor, UnboundType, AnyType, NoneType, UninhabitedType,
     ErasedType, DeletedType, Instance, TypeVarType, CallableType, TupleType, TypedDictType,
-    UnionType, Overloaded, PartialType, TypeType, LiteralType, TypeAliasType
+    UnionType, Overloaded, PartialType, TypeType, LiteralType, TypeAliasType, ParamSpecType,
+    Parameters, UnpackType, TypeVarTupleType,
 )
 from mypy.util import get_prefix
 
@@ -151,6 +152,10 @@ def snapshot_symbol_table(name_prefix: str, table: SymbolTable) -> Dict[str, Sna
                             node.normalized,
                             node.no_args,
                             snapshot_optional_type(node.target))
+        elif isinstance(node, ParamSpecExpr):
+            result[name] = ('ParamSpec',
+                            node.variance,
+                            snapshot_type(node.upper_bound))
         else:
             assert symbol.kind != UNBOUND_IMPORTED
             if node and get_prefix(node.fullname) != name_prefix:
@@ -305,6 +310,28 @@ class SnapshotTypeVisitor(TypeVisitor[SnapshotItem]):
                 snapshot_types(typ.values),
                 snapshot_type(typ.upper_bound),
                 typ.variance)
+
+    def visit_param_spec(self, typ: ParamSpecType) -> SnapshotItem:
+        return ('ParamSpec',
+                typ.id.raw_id,
+                typ.id.meta_level,
+                typ.flavor,
+                snapshot_type(typ.upper_bound))
+
+    def visit_type_var_tuple(self, typ: TypeVarTupleType) -> SnapshotItem:
+        return ('TypeVarTupleType',
+                typ.id.raw_id,
+                typ.id.meta_level,
+                snapshot_type(typ.upper_bound))
+
+    def visit_unpack_type(self, typ: UnpackType) -> SnapshotItem:
+        return ('UnpackType', snapshot_type(typ.type))
+
+    def visit_parameters(self, typ: Parameters) -> SnapshotItem:
+        return ('Parameters',
+                snapshot_types(typ.arg_types),
+                tuple(encode_optional_str(name) for name in typ.arg_names),
+                tuple(typ.arg_kinds))
 
     def visit_callable_type(self, typ: CallableType) -> SnapshotItem:
         # FIX generics

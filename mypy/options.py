@@ -46,6 +46,7 @@ PER_MODULE_OPTIONS: Final = {
     "mypyc",
     "no_implicit_optional",
     "show_none_errors",
+    "strict_concatenate",
     "strict_equality",
     "strict_optional",
     "strict_optional_whitelist",
@@ -100,7 +101,7 @@ class Options:
         # top-level __init__.py to your packages.
         self.explicit_package_bases = False
         # File names, directory names or subpaths to avoid checking
-        self.exclude: str = ""
+        self.exclude: List[str] = []
 
         # disallow_any options
         self.disallow_any_generics = False
@@ -183,6 +184,9 @@ class Options:
         # This makes 1 == '1', 1 in ['1'], and 1 is '1' errors.
         self.strict_equality = False
 
+        # Make arguments prepended via Concatenate be truly positional-only.
+        self.strict_concatenate = False
+
         # Report an error for any branches inferred to be unreachable as a result of
         # type analysis.
         self.warn_unreachable = False
@@ -258,6 +262,7 @@ class Options:
         self.dump_type_stats = False
         self.dump_inference_stats = False
         self.dump_build_stats = False
+        self.enable_incomplete_features = False
 
         # -- test options --
         # Stop after the semantic analysis phase
@@ -286,7 +291,7 @@ class Options:
         self.package_root: List[str] = []
         self.cache_map: Dict[str, Tuple[str, str]] = {}
         # Don't properly free objects on exit, just kill the current process.
-        self.fast_exit = False
+        self.fast_exit = True
         # Used to transform source code before parsing if not None
         # TODO: Make the type precise (AnyStr -> AnyStr)
         self.transform_source: Optional[Callable[[Any], Any]] = None

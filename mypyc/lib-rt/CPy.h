@@ -121,6 +121,7 @@ static inline size_t CPy_FindAttrOffset(PyTypeObject *trait, CPyVTableItem *vtab
 
 
 CPyTagged CPyTagged_FromSsize_t(Py_ssize_t value);
+CPyTagged CPyTagged_FromVoidPtr(void *ptr);
 CPyTagged CPyTagged_FromObject(PyObject *object);
 CPyTagged CPyTagged_StealFromObject(PyObject *object);
 CPyTagged CPyTagged_BorrowFromObject(PyObject *object);
@@ -156,6 +157,24 @@ static inline int CPyTagged_CheckLong(CPyTagged x) {
 
 static inline int CPyTagged_CheckShort(CPyTagged x) {
     return !CPyTagged_CheckLong(x);
+}
+
+static inline void CPyTagged_INCREF(CPyTagged x) {
+    if (unlikely(CPyTagged_CheckLong(x))) {
+        CPyTagged_IncRef(x);
+    }
+}
+
+static inline void CPyTagged_DECREF(CPyTagged x) {
+    if (unlikely(CPyTagged_CheckLong(x))) {
+        CPyTagged_DecRef(x);
+    }
+}
+
+static inline void CPyTagged_XDECREF(CPyTagged x) {
+    if (unlikely(CPyTagged_CheckLong(x))) {
+        CPyTagged_XDecRef(x);
+    }
 }
 
 static inline Py_ssize_t CPyTagged_ShortAsSsize_t(CPyTagged x) {
@@ -253,11 +272,10 @@ static inline bool CPyTagged_IsLe(CPyTagged left, CPyTagged right) {
 // Generic operations (that work with arbitrary types)
 
 
-/* We use intentionally non-inlined decrefs since it pretty
- * substantially speeds up compile time while only causing a ~1%
- * performance degradation. We have our own copies both to avoid the
- * null check in Py_DecRef and to avoid making an indirect PIC
- * call. */
+/* We use intentionally non-inlined decrefs in rarely executed code
+ * paths since it pretty substantially speeds up compile time. We have
+ * our own copies both to avoid the null check in Py_DecRef and to avoid
+ * making an indirect PIC call. */
 CPy_NOINLINE
 static void CPy_DecRef(PyObject *p) {
     CPy_DECREF(p);
@@ -480,6 +498,8 @@ void _CPy_GetExcInfo(PyObject **p_type, PyObject **p_value, PyObject **p_traceba
 void CPyError_OutOfMemory(void);
 void CPy_TypeError(const char *expected, PyObject *value);
 void CPy_AddTraceback(const char *filename, const char *funcname, int line, PyObject *globals);
+void CPy_AttributeError(const char *filename, const char *funcname, const char *classname,
+                        const char *attrname, int line, PyObject *globals);
 
 
 // Misc operations

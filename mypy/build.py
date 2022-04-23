@@ -15,6 +15,7 @@ import errno
 import gc
 import json
 import os
+import platform
 import re
 import stat
 import sys
@@ -23,7 +24,7 @@ import types
 
 from typing import (AbstractSet, Any, Dict, Iterable, Iterator, List, Sequence,
                     Mapping, NamedTuple, Optional, Set, Tuple, TypeVar, Union, Callable, TextIO)
-from typing_extensions import ClassVar, Final, TYPE_CHECKING
+from typing_extensions import ClassVar, Final, TYPE_CHECKING, TypeAlias as _TypeAlias
 from mypy_extensions import TypedDict
 
 from mypy.nodes import MypyFile, ImportBase, Import, ImportFrom, ImportAll, SymbolTable
@@ -55,7 +56,7 @@ from mypy.plugins.default import DefaultPlugin
 from mypy.fscache import FileSystemCache
 from mypy.metastore import MetadataStore, FilesystemMetadataStore, SqliteMetadataStore
 from mypy.typestate import TypeState, reset_global_state
-from mypy.renaming import VariableRenameVisitor
+from mypy.renaming import VariableRenameVisitor, LimitedVariableRenameVisitor
 from mypy.config_parser import parse_mypy_comments
 from mypy.freetree import free_tree
 from mypy.stubinfo import legacy_bundled_packages, is_legacy_bundled_package
@@ -81,7 +82,7 @@ CORE_BUILTIN_MODULES: Final = {
 }
 
 
-Graph = Dict[str, 'State']
+Graph: _TypeAlias = Dict[str, 'State']
 
 
 # TODO: Get rid of BuildResult.  We might as well return a BuildManager.
@@ -201,8 +202,9 @@ def _build(sources: List[BuildSource],
            stderr: TextIO,
            extra_plugins: Sequence[Plugin],
            ) -> BuildResult:
-    # This seems the most reasonable place to tune garbage collection.
-    gc.set_threshold(150 * 1000)
+    if platform.python_implementation() == 'CPython':
+        # This seems the most reasonable place to tune garbage collection.
+        gc.set_threshold(150 * 1000)
 
     data_dir = default_data_dir()
     fscache = fscache or FileSystemCache()
@@ -492,6 +494,7 @@ def take_module_snapshot(module: types.ModuleType) -> str:
     (e.g. if there is a change in modules imported by a plugin).
     """
     if hasattr(module, '__file__'):
+        assert module.__file__ is not None
         with open(module.__file__, 'rb') as f:
             digest = hash_digest(f.read())
     else:
@@ -508,7 +511,7 @@ def find_config_file_line_number(path: str, section: str, setting_name: str) -> 
     in_desired_section = False
     try:
         results = []
-        with open(path) as f:
+        with open(path, encoding="UTF-8") as f:
             for i, line in enumerate(f):
                 line = line.strip()
                 if line.startswith('[') and line.endswith(']'):
@@ -536,8 +539,6 @@ class BuildManager:
       modules:         Mapping of module ID to MypyFile (shared by the passes)
       semantic_analyzer:
                        Semantic analyzer, pass 2
-      semantic_analyzer_pass3:
-                       Semantic analyzer, pass 3
       all_types:       Map {Expression: Type} from all modules (enabled by export_types)
       options:         Build options
       missing_modules: Set of modules that could not be imported encountered so far
@@ -729,20 +730,19 @@ class BuildManager:
             return new_id
 
         res: List[Tuple[int, str, int]] = []
+        delayed_res: List[Tuple[int, str, int]] = []
         for imp in file.imports:
             if not imp.is_unreachable:
                 if isinstance(imp, Import):
                     pri = import_priority(imp, PRI_MED)
                     ancestor_pri = import_priority(imp, PRI_LOW)
                     for id, _ in imp.ids:
-                        # We append the target (e.g. foo.bar.baz)
-                        # before the ancestors (e.g. foo and foo.bar)
-                        # so that, if FindModuleCache finds the target
-                        # module in a package marked with py.typed
-                        # underneath a namespace package installed in
-                        # site-packages, (gasp), that cache's
-                        # knowledge of the ancestors can be primed
-                        # when it is asked to find the target.
+                        # We append the target (e.g. foo.bar.baz) before the ancestors (e.g. foo
+                        # and foo.bar) so that, if FindModuleCache finds the target module in a
+                        # package marked with py.typed underneath a namespace package installed in
+                        # site-packages, (gasp), that cache's knowledge of the ancestors
+                        # (aka FindModuleCache.ns_ancestors) can be primed when it is asked to find
+                        # the parent.
                         res.append((pri, id, imp.line))
                         ancestor_parts = id.split(".")[:-1]
                         ancestors = []
@@ -751,6 +751,7 @@ class BuildManager:
                             res.append((ancestor_pri, ".".join(ancestors), imp.line))
                 elif isinstance(imp, ImportFrom):
                     cur_id = correct_rel_imp(imp)
+                    any_are_submodules = False
                     all_are_submodules = True
                     # Also add any imported names that are submodules.
                     pri = import_priority(imp, PRI_MED)
@@ -758,6 +759,7 @@ class BuildManager:
                         sub_id = cur_id + '.' + name
                         if self.is_module(sub_id):
                             res.append((pri, sub_id, imp.line))
+                            any_are_submodules = True
                         else:
                             all_are_submodules = False
                     # Add cur_id as a dependency, even if all of the
@@ -767,14 +769,19 @@ class BuildManager:
                     # if all of the imports are submodules, do the import at a lower
                     # priority.
                     pri = import_priority(imp, PRI_HIGH if not all_are_submodules else PRI_LOW)
-                    # The imported module goes in after the
-                    # submodules, for the same namespace related
-                    # reasons discussed in the Import case.
-                    res.append((pri, cur_id, imp.line))
+                    # The imported module goes in after the submodules, for the same namespace
+                    # related reasons discussed in the Import case.
+                    # There is an additional twist: if none of the submodules exist,
+                    # we delay the import in case other imports of other submodules succeed.
+                    if any_are_submodules:
+                        res.append((pri, cur_id, imp.line))
+                    else:
+                        delayed_res.append((pri, cur_id, imp.line))
                 elif isinstance(imp, ImportAll):
                     pri = import_priority(imp, PRI_HIGH)
                     res.append((pri, correct_rel_imp(imp), imp.line))
 
+        res.extend(delayed_res)
         return res
 
     def is_module(self, id: str) -> bool:
@@ -1093,7 +1100,9 @@ def _load_json_file(file: str, manager: BuildManager,
     if manager.verbosity() >= 2:
         manager.trace(log_success + data.rstrip())
     try:
+        t1 = time.time()
         result = json.loads(data)
+        manager.add_stats(data_json_load_time=time.time() - t1)
     except json.JSONDecodeError:
         manager.errors.set_file(file, None)
         manager.errors.report(-1, -1,
@@ -1306,8 +1315,11 @@ def validate_meta(meta: Optional[CacheMeta], id: str, path: Optional[str],
     assert path is not None, "Internal error: meta was provided without a path"
     if not manager.options.skip_cache_mtime_checks:
         # Check data_json; assume if its mtime matches it's good.
-        # TODO: stat() errors
-        data_mtime = manager.getmtime(meta.data_json)
+        try:
+            data_mtime = manager.getmtime(meta.data_json)
+        except OSError:
+            manager.log('Metadata abandoned for {}: failed to stat data_json'.format(id))
+            return None
         if data_mtime != meta.data_mtime:
             manager.log('Metadata abandoned for {}: data cache is modified'.format(id))
             return None
@@ -1503,9 +1515,6 @@ def write_cache(id: str, path: str, tree: MypyFile,
     # Write data cache file, if applicable
     # Note that for Bazel we don't record the data file's mtime.
     if old_interface_hash == interface_hash:
-        # If the interface is unchanged, the cached data is guaranteed
-        # to be equivalent, and we only need to update the metadata.
-        data_mtime = manager.getmtime(data_json)
         manager.trace("Interface for {} is unchanged".format(id))
     else:
         manager.trace("Interface for {} has changed".format(id))
@@ -1522,7 +1531,12 @@ def write_cache(id: str, path: str, tree: MypyFile,
             # Both have the effect of slowing down the next run a
             # little bit due to an out-of-date cache file.
             return interface_hash, None
+
+    try:
         data_mtime = manager.getmtime(data_json)
+    except OSError:
+        manager.log("Error in os.stat({!r}), skipping cache write".format(data_json))
+        return interface_hash, None
 
     mtime = 0 if bazel else int(st.st_mtime)
     size = st.st_size
@@ -1976,17 +1990,17 @@ class State:
     def load_tree(self, temporary: bool = False) -> None:
         assert self.meta is not None, "Internal error: this method must be called only" \
                                       " for cached modules"
+
+        data = _load_json_file(self.meta.data_json, self.manager, "Load tree ",
+                               "Could not load tree: ")
+        if data is None:
+            return None
+
         t0 = time.time()
-        raw = self.manager.metastore.read(self.meta.data_json)
-        t1 = time.time()
-        data = json.loads(raw)
-        t2 = time.time()
         # TODO: Assert data file wasn't changed.
         self.tree = MypyFile.deserialize(data)
-        t3 = time.time()
-        self.manager.add_stats(data_read_time=t1 - t0,
-                               data_json_load_time=t2 - t1,
-                               deserialize_time=t3 - t2)
+        t1 = time.time()
+        self.manager.add_stats(deserialize_time=t1 - t0)
         if not temporary:
             self.manager.modules[self.id] = self.tree
             self.manager.add_stats(fresh_trees=1)
@@ -2111,9 +2125,12 @@ class State:
             analyzer.visit_file(self.tree, self.xpath, self.id, options)
         # TODO: Do this while constructing the AST?
         self.tree.names = SymbolTable()
-        if options.allow_redefinition:
-            # Perform renaming across the AST to allow variable redefinitions
-            self.tree.accept(VariableRenameVisitor())
+        if not self.tree.is_stub:
+            # Always perform some low-key variable renaming
+            self.tree.accept(LimitedVariableRenameVisitor())
+            if options.allow_redefinition:
+                # Perform more renaming across the AST to allow variable redefinitions
+                self.tree.accept(VariableRenameVisitor())
 
     def add_dependency(self, dep: str) -> None:
         if dep not in self.dependencies_set:
@@ -2181,7 +2198,6 @@ class State:
             self._type_checker = TypeChecker(
                 manager.errors, manager.modules, self.options,
                 self.tree, self.xpath, manager.plugin,
-                self.manager.semantic_analyzer.future_import_flags,
             )
         return self._type_checker
 
@@ -2363,6 +2379,13 @@ class State:
             if self.meta:
                 self.verify_dependencies(suppressed_only=True)
             self.manager.errors.generate_unused_ignore_errors(self.xpath)
+
+    def generate_ignore_without_code_notes(self) -> None:
+        if self.manager.errors.is_error_code_enabled(codes.IGNORE_WITHOUT_CODE):
+            self.manager.errors.generate_ignore_without_code_errors(
+                self.xpath,
+                self.options.warn_unused_ignores,
+            )
 
 
 # Module import and diagnostic glue
@@ -2825,8 +2848,15 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
             )
             manager.errors.report(
                 -1, -1,
-                "Are you missing an __init__.py? Alternatively, consider using --exclude to "
-                "avoid checking one of them.",
+                "See https://mypy.readthedocs.io/en/stable/running_mypy.html#mapping-file-paths-to-modules "  # noqa: E501
+                "for more info",
+                severity='note',
+            )
+            manager.errors.report(
+                -1, -1,
+                "Common resolutions include: a) using `--exclude` to avoid checking one of them, "
+                "b) adding `__init__.py` somewhere, c) using `--explicit-package-bases` or "
+                "adjusting MYPYPATH",
                 severity='note'
             )
 
@@ -2900,6 +2930,12 @@ def load_graph(sources: List[BuildSource], manager: BuildManager,
                                 "for more info",
                                 severity='note',
                             )
+                            manager.errors.report(
+                                -1, 0,
+                                "Common resolutions include: a) adding `__init__.py` somewhere, "
+                                "b) using `--explicit-package-bases` or adjusting MYPYPATH",
+                                severity='note',
+                            )
                             manager.errors.raise_error()
 
                         seen_files[newst_path] = newst
@@ -2929,12 +2965,16 @@ def process_graph(graph: Graph, manager: BuildManager) -> None:
         # Order the SCC's nodes using a heuristic.
         # Note that ascc is a set, and scc is a list.
         scc = order_ascc(graph, ascc)
-        # If builtins is in the list, move it last.  (This is a bit of
-        # a hack, but it's necessary because the builtins module is
-        # part of a small cycle involving at least {builtins, abc,
-        # typing}.  Of these, builtins must be processed last or else
-        # some builtin objects will be incompletely processed.)
+        # Make the order of the SCC that includes 'builtins' and 'typing',
+        # among other things, predictable. Various things may  break if
+        # the order changes.
         if 'builtins' in ascc:
+            scc = sorted(scc, reverse=True)
+            # If builtins is in the list, move it last.  (This is a bit of
+            # a hack, but it's necessary because the builtins module is
+            # part of a small cycle involving at least {builtins, abc,
+            # typing}.  Of these, builtins must be processed last or else
+            # some builtin objects will be incompletely processed.)
             scc.remove('builtins')
             scc.append('builtins')
         if manager.options.verbosity >= 2:
@@ -3150,6 +3190,7 @@ def process_stale_scc(graph: Graph, scc: List[str], manager: BuildManager) -> No
                 graph[id].finish_passes()
     for id in stale:
         graph[id].generate_unused_ignore_notes()
+        graph[id].generate_ignore_without_code_notes()
     if any(manager.errors.is_errors_for_file(graph[id].xpath) for id in stale):
         for id in stale:
             graph[id].transitive_error = True

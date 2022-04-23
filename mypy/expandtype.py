@@ -5,7 +5,8 @@ from mypy.types import (
     NoneType, Overloaded, TupleType, TypedDictType, UnionType,
     ErasedType, PartialType, DeletedType, UninhabitedType, TypeType, TypeVarId,
     FunctionLike, TypeVarType, LiteralType, get_proper_type, ProperType,
-    TypeAliasType, ParamSpecType
+    TypeAliasType, ParamSpecType, TypeVarLikeType, Parameters, ParamSpecFlavor,
+    UnpackType, TypeVarTupleType
 )
 
 
@@ -42,10 +43,11 @@ def freshen_function_type_vars(callee: F) -> F:
         tvmap: Dict[TypeVarId, Type] = {}
         for v in callee.variables:
             # TODO(PEP612): fix for ParamSpecType
-            if isinstance(v, ParamSpecType):
-                continue
-            assert isinstance(v, TypeVarType)
-            tv = TypeVarType.new_unification_variable(v)
+            if isinstance(v, TypeVarType):
+                tv: TypeVarLikeType = TypeVarType.new_unification_variable(v)
+            else:
+                assert isinstance(v, ParamSpecType)
+                tv = ParamSpecType.new_unification_variable(v)
             tvs.append(tv)
             tvmap[v.id] = tv
         fresh = cast(CallableType, expand_type(callee, tvmap)).copy_modified(variables=tvs)
@@ -92,13 +94,76 @@ class ExpandTypeVisitor(TypeVisitor[Type]):
         repl = get_proper_type(self.variables.get(t.id, t))
         if isinstance(repl, Instance):
             inst = repl
-            # Return copy of instance with type erasure flag on.
-            return Instance(inst.type, inst.args, line=inst.line,
-                            column=inst.column, erased=True)
+            return Instance(inst.type, inst.args, line=inst.line, column=inst.column)
         else:
             return repl
 
+    def visit_param_spec(self, t: ParamSpecType) -> Type:
+        repl = get_proper_type(self.variables.get(t.id, t))
+        if isinstance(repl, Instance):
+            inst = repl
+            # Return copy of instance with type erasure flag on.
+            # TODO: what does prefix mean in this case?
+            # TODO: why does this case even happen? Instances aren't plural.
+            return Instance(inst.type, inst.args, line=inst.line, column=inst.column)
+        elif isinstance(repl, ParamSpecType):
+            return repl.copy_modified(flavor=t.flavor, prefix=t.prefix.copy_modified(
+                arg_types=t.prefix.arg_types + repl.prefix.arg_types,
+                arg_kinds=t.prefix.arg_kinds + repl.prefix.arg_kinds,
+                arg_names=t.prefix.arg_names + repl.prefix.arg_names,
+            ))
+        elif isinstance(repl, Parameters) or isinstance(repl, CallableType):
+            # if the paramspec is *P.args or **P.kwargs:
+            if t.flavor != ParamSpecFlavor.BARE:
+                assert isinstance(repl, CallableType), "Should not be able to get here."
+                # Is this always the right thing to do?
+                param_spec = repl.param_spec()
+                if param_spec:
+                    return param_spec.with_flavor(t.flavor)
+                else:
+                    return repl
+            else:
+                return Parameters(t.prefix.arg_types + repl.arg_types,
+                                  t.prefix.arg_kinds + repl.arg_kinds,
+                                  t.prefix.arg_names + repl.arg_names,
+                                  variables=[*t.prefix.variables, *repl.variables])
+        else:
+            # TODO: should this branch be removed? better not to fail silently
+            return repl
+
+    def visit_type_var_tuple(self, t: TypeVarTupleType) -> Type:
+        raise NotImplementedError
+
+    def visit_unpack_type(self, t: UnpackType) -> Type:
+        raise NotImplementedError
+
+    def visit_parameters(self, t: Parameters) -> Type:
+        return t.copy_modified(arg_types=self.expand_types(t.arg_types))
+
     def visit_callable_type(self, t: CallableType) -> Type:
+        param_spec = t.param_spec()
+        if param_spec is not None:
+            repl = get_proper_type(self.variables.get(param_spec.id))
+            # If a ParamSpec in a callable type is substituted with a
+            # callable type, we can't use normal substitution logic,
+            # since ParamSpec is actually split into two components
+            # *P.args and **P.kwargs in the original type. Instead, we
+            # must expand both of them with all the argument types,
+            # kinds and names in the replacement. The return type in
+            # the replacement is ignored.
+            if isinstance(repl, CallableType) or isinstance(repl, Parameters):
+                # Substitute *args: P.args, **kwargs: P.kwargs
+                prefix = param_spec.prefix
+                # we need to expand the types in the prefix, so might as well
+                # not get them in the first place
+                t = t.expand_param_spec(repl, no_prefix=True)
+                return t.copy_modified(
+                    arg_types=self.expand_types(prefix.arg_types) + t.arg_types,
+                    arg_kinds=prefix.arg_kinds + t.arg_kinds,
+                    arg_names=prefix.arg_names + t.arg_names,
+                    ret_type=t.ret_type.accept(self),
+                    type_guard=(t.type_guard.accept(self) if t.type_guard is not None else None))
+
         return t.copy_modified(arg_types=self.expand_types(t.arg_types),
                                ret_type=t.ret_type.accept(self),
                                type_guard=(t.type_guard.accept(self)

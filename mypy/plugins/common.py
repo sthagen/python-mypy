@@ -5,7 +5,7 @@ from mypy.nodes import (
     FuncDef, PassStmt, RefExpr, SymbolTableNode, Var, JsonDict,
 )
 from mypy.plugin import CheckerPluginInterface, ClassDefContext, SemanticAnalyzerPluginInterface
-from mypy.semanal import set_callable_name
+from mypy.semanal import set_callable_name, ALLOW_INCOMPATIBLE_OVERRIDE
 from mypy.types import (
     CallableType, Overloaded, Type, TypeVarType, deserialize_type, get_proper_type,
 )
@@ -122,13 +122,8 @@ def add_method_to_class(
             cls.defs.body.remove(sym.node)
 
     self_type = self_type or fill_typevars(info)
-    # TODO: semanal.py and checker.py seem to have subtly different implementations of
-    # named_type/named_generic_type (starting with the fact that we have to use different names
-    # for builtins), so it's easier to just check which one we're dealing with here and pick the
-    # correct function to use than to try to add a named_type method that behaves the same for
-    # both. We should probably combine those implementations at some point.
     if isinstance(api, SemanticAnalyzerPluginInterface):
-        function_type = api.named_type('__builtins__.function')
+        function_type = api.named_type('builtins.function')
     else:
         function_type = api.named_generic_type('builtins.function', [])
 
@@ -159,6 +154,44 @@ def add_method_to_class(
 
     info.names[name] = SymbolTableNode(MDEF, func, plugin_generated=True)
     info.defn.defs.body.append(func)
+
+
+def add_attribute_to_class(
+        api: SemanticAnalyzerPluginInterface,
+        cls: ClassDef,
+        name: str,
+        typ: Type,
+        final: bool = False,
+        no_serialize: bool = False,
+        override_allow_incompatible: bool = False,
+) -> None:
+    """
+    Adds a new attribute to a class definition.
+    This currently only generates the symbol table entry and no corresponding AssignmentStatement
+    """
+    info = cls.info
+
+    # NOTE: we would like the plugin generated node to dominate, but we still
+    # need to keep any existing definitions so they get semantically analyzed.
+    if name in info.names:
+        # Get a nice unique name instead.
+        r_name = get_unique_redefinition_name(name, info.names)
+        info.names[r_name] = info.names[name]
+
+    node = Var(name, typ)
+    node.info = info
+    node.is_final = final
+    if name in ALLOW_INCOMPATIBLE_OVERRIDE:
+        node.allow_incompatible_override = True
+    else:
+        node.allow_incompatible_override = override_allow_incompatible
+    node._fullname = info.fullname + '.' + name
+    info.names[name] = SymbolTableNode(
+        MDEF,
+        node,
+        plugin_generated=True,
+        no_serialize=no_serialize,
+    )
 
 
 def deserialize_and_fixup_type(

@@ -308,8 +308,8 @@ def write_file(path: str, contents: str) -> None:
         old_contents = None
     if old_contents != encoded_contents:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'wb') as f:
-            f.write(encoded_contents)
+        with open(path, 'wb') as g:
+            g.write(encoded_contents)
 
         # Fudge the mtime forward because otherwise when two builds happen close
         # together (like in a test) setuptools might not realize the source is newer
@@ -431,7 +431,8 @@ def mypycify(
     *,
     only_compile_paths: Optional[Iterable[str]] = None,
     verbose: bool = False,
-    opt_level: str = '3',
+    opt_level: str = "3",
+    debug_level: str = "1",
     strip_asserts: bool = False,
     multi_file: bool = False,
     separate: Union[bool, List[Tuple[List[str], Optional[str]]]] = False,
@@ -454,6 +455,7 @@ def mypycify(
         verbose: Should mypyc be more verbose. Defaults to false.
 
         opt_level: The optimization level, as a string. Defaults to '3' (meaning '-O3').
+        debug_level: The debug level, as a string. Defaults to '1' (meaning '-g1').
         strip_asserts: Should asserts be stripped from the generated code.
 
         multi_file: Should each Python module be compiled into its own C source file.
@@ -511,7 +513,9 @@ def mypycify(
     cflags: List[str] = []
     if compiler.compiler_type == 'unix':
         cflags += [
-            '-O{}'.format(opt_level), '-Werror', '-Wno-unused-function', '-Wno-unused-label',
+            '-O{}'.format(opt_level),
+            '-g{}'.format(debug_level),
+            '-Werror', '-Wno-unused-function', '-Wno-unused-label',
             '-Wno-unreachable-code', '-Wno-unused-variable',
             '-Wno-unused-command-line-argument', '-Wno-unknown-warning-option',
         ]
@@ -519,10 +523,20 @@ def mypycify(
             # This flag is needed for gcc but does not exist on clang.
             cflags += ['-Wno-unused-but-set-variable']
     elif compiler.compiler_type == 'msvc':
-        if opt_level == '3':
+        # msvc doesn't have levels, '/O2' is full and '/Od' is disable
+        if opt_level == '0':
+            opt_level = 'd'
+        elif opt_level in ('1', '2', '3'):
             opt_level = '2'
+        if debug_level == '0':
+            debug_level = "NONE"
+        elif debug_level == '1':
+            debug_level = "FASTLINK"
+        elif debug_level in ('2', '3'):
+            debug_level = "FULL"
         cflags += [
             '/O{}'.format(opt_level),
+            f'/DEBUG:{debug_level}',
             '/wd4102',  # unreferenced label
             '/wd4101',  # unreferenced local variable
             '/wd4146',  # negating unsigned int

@@ -2,10 +2,9 @@ from functools import partial
 from typing import Callable, Optional, List
 
 from mypy import message_registry
-from mypy.nodes import Expression, StrExpr, IntExpr, DictExpr, UnaryExpr
+from mypy.nodes import StrExpr, IntExpr, DictExpr, UnaryExpr
 from mypy.plugin import (
-    Plugin, FunctionContext, MethodContext, MethodSigContext, AttributeContext, ClassDefContext,
-    CheckerPluginInterface,
+    Plugin, FunctionContext, MethodContext, MethodSigContext, AttributeContext, ClassDefContext
 )
 from mypy.plugins.common import try_getting_str_literals
 from mypy.types import (
@@ -24,10 +23,8 @@ class DefaultPlugin(Plugin):
                           ) -> Optional[Callable[[FunctionContext], Type]]:
         from mypy.plugins import ctypes, singledispatch
 
-        if fullname == 'contextlib.contextmanager':
+        if fullname in ('contextlib.contextmanager', 'contextlib.asynccontextmanager'):
             return contextmanager_callback
-        elif fullname == 'builtins.open' and self.python_version[0] == 3:
-            return open_callback
         elif fullname == 'ctypes.Array':
             return ctypes.array_constructor_callback
         elif fullname == 'functools.singledispatch':
@@ -46,8 +43,6 @@ class DefaultPlugin(Plugin):
             return typed_dict_pop_signature_callback
         elif fullname in set(n + '.update' for n in TPDICT_FB_NAMES):
             return typed_dict_update_signature_callback
-        elif fullname in set(n + '.__delitem__' for n in TPDICT_FB_NAMES):
-            return typed_dict_delitem_signature_callback
         elif fullname == 'ctypes.Array.__setitem__':
             return ctypes.array_setitem_callback
         elif fullname == singledispatch.SINGLEDISPATCH_CALLABLE_CALL_METHOD:
@@ -76,8 +71,6 @@ class DefaultPlugin(Plugin):
             return ctypes.array_getitem_callback
         elif fullname == 'ctypes.Array.__iter__':
             return ctypes.array_iter_callback
-        elif fullname == 'pathlib.Path.open':
-            return path_open_callback
         elif fullname == singledispatch.SINGLEDISPATCH_REGISTER_METHOD:
             return singledispatch.singledispatch_register_callback
         elif fullname == singledispatch.REGISTER_CALLABLE_CALL_METHOD:
@@ -129,58 +122,6 @@ class DefaultPlugin(Plugin):
             return functools.functools_total_ordering_maker_callback
 
         return None
-
-
-def open_callback(ctx: FunctionContext) -> Type:
-    """Infer a better return type for 'open'."""
-    return _analyze_open_signature(
-        arg_types=ctx.arg_types,
-        args=ctx.args,
-        mode_arg_index=1,
-        default_return_type=ctx.default_return_type,
-        api=ctx.api,
-    )
-
-
-def path_open_callback(ctx: MethodContext) -> Type:
-    """Infer a better return type for 'pathlib.Path.open'."""
-    return _analyze_open_signature(
-        arg_types=ctx.arg_types,
-        args=ctx.args,
-        mode_arg_index=0,
-        default_return_type=ctx.default_return_type,
-        api=ctx.api,
-    )
-
-
-def _analyze_open_signature(arg_types: List[List[Type]],
-                            args: List[List[Expression]],
-                            mode_arg_index: int,
-                            default_return_type: Type,
-                            api: CheckerPluginInterface,
-                            ) -> Type:
-    """A helper for analyzing any function that has approximately
-    the same signature as the builtin 'open(...)' function.
-
-    Currently, the only thing the caller can customize is the index
-    of the 'mode' argument. If the mode argument is omitted or is a
-    string literal, we refine the return type to either 'TextIO' or
-    'BinaryIO' as appropriate.
-    """
-    mode = None
-    if not arg_types or len(arg_types[mode_arg_index]) != 1:
-        mode = 'r'
-    else:
-        mode_expr = args[mode_arg_index][0]
-        if isinstance(mode_expr, StrExpr):
-            mode = mode_expr.value
-    if mode is not None:
-        assert isinstance(default_return_type, Instance)  # type: ignore
-        if 'b' in mode:
-            return api.named_generic_type('typing.BinaryIO', [])
-        else:
-            return api.named_generic_type('typing.TextIO', [])
-    return default_return_type
 
 
 def contextmanager_callback(ctx: FunctionContext) -> Type:
@@ -388,12 +329,6 @@ def typed_dict_setdefault_callback(ctx: MethodContext) -> Type:
 
         return make_simplified_union(value_types)
     return ctx.default_return_type
-
-
-def typed_dict_delitem_signature_callback(ctx: MethodSigContext) -> CallableType:
-    # Replace NoReturn as the argument type.
-    str_type = ctx.api.named_generic_type('builtins.str', [])
-    return ctx.default_signature.copy_modified(arg_types=[str_type])
 
 
 def typed_dict_delitem_callback(ctx: MethodContext) -> Type:

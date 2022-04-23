@@ -4,23 +4,22 @@ and potentially other mutable TypeInfo state. This module contains mutable globa
 """
 
 from typing import Dict, Set, Tuple, Optional, List
-from typing_extensions import ClassVar, Final
+from typing_extensions import ClassVar, Final, TypeAlias as _TypeAlias
 
 from mypy.nodes import TypeInfo
 from mypy.types import Instance, TypeAliasType, get_proper_type, Type
 from mypy.server.trigger import make_trigger
-from mypy import state
 
 # Represents that the 'left' instance is a subtype of the 'right' instance
-SubtypeRelationship = Tuple[Instance, Instance]
+SubtypeRelationship: _TypeAlias = Tuple[Instance, Instance]
 
 # A tuple encoding the specific conditions under which we performed the subtype check.
 # (e.g. did we want a proper subtype? A regular subtype while ignoring variance?)
-SubtypeKind = Tuple[bool, ...]
+SubtypeKind: _TypeAlias = Tuple[bool, ...]
 
 # A cache that keeps track of whether the given TypeInfo is a part of a particular
 # subtype relationship
-SubtypeCache = Dict[TypeInfo, Dict[SubtypeKind, Set[SubtypeRelationship]]]
+SubtypeCache: _TypeAlias = Dict[TypeInfo, Dict[SubtypeKind, Set[SubtypeRelationship]]]
 
 
 class TypeState:
@@ -124,20 +123,29 @@ class TypeState:
 
     @staticmethod
     def is_cached_subtype_check(kind: SubtypeKind, left: Instance, right: Instance) -> bool:
+        if left.last_known_value is not None or right.last_known_value is not None:
+            # If there is a literal last known value, give up. There
+            # will be an unbounded number of potential types to cache,
+            # making caching less effective.
+            return False
         info = right.type
-        if info not in TypeState._subtype_caches:
+        cache = TypeState._subtype_caches.get(info)
+        if cache is None:
             return False
-        cache = TypeState._subtype_caches[info]
-        key = (state.strict_optional,) + kind
-        if key not in cache:
+        subcache = cache.get(kind)
+        if subcache is None:
             return False
-        return (left, right) in cache[key]
+        return (left, right) in subcache
 
     @staticmethod
     def record_subtype_cache_entry(kind: SubtypeKind,
                                    left: Instance, right: Instance) -> None:
+        if left.last_known_value is not None or right.last_known_value is not None:
+            # These are unlikely to match, due to the large space of
+            # possible values.  Avoid uselessly increasing cache sizes.
+            return
         cache = TypeState._subtype_caches.setdefault(right.type, dict())
-        cache.setdefault((state.strict_optional,) + kind, set()).add((left, right))
+        cache.setdefault(kind, set()).add((left, right))
 
     @staticmethod
     def reset_protocol_deps() -> None:

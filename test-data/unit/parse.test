@@ -935,7 +935,7 @@ MypyFile:1(
 x not y
 [out]
 main:1: error: invalid syntax
-[out version>=3.10]
+[out version==3.10.0]
 main:1: error: invalid syntax. Perhaps you forgot a comma?
 
 [case testNotIs]
@@ -946,75 +946,8 @@ x not is y # E: invalid syntax
 1 ~ 2
 [out]
 main:1: error: invalid syntax
-[out version>=3.10]
+[out version==3.10.0]
 main:1: error: invalid syntax. Perhaps you forgot a comma?
-
-[case testSliceInAnnotation39]
-# flags: --python-version 3.9
-a: Annotated[int, 1:2]  # E: Slice usage in type annotation is invalid
-b: Dict[int, x:y]  # E: Slice usage in type annotation is invalid
-c: Dict[x:y]  # E: Slice usage in type annotation is invalid
-[out]
-
-[case testSliceInAnnotation38]
-# flags: --python-version 3.8
-a: Annotated[int, 1:2]  # E: Slice usage in type annotation is invalid
-b: Dict[int, x:y]  # E: Slice usage in type annotation is invalid
-c: Dict[x:y]  # E: Slice usage in type annotation is invalid
-[out]
-
-[case testSliceInAnnotationTypeComment39]
-# flags: --python-version 3.9
-a = None  # type: Annotated[int, 1:2]  # E: Slice usage in type annotation is invalid
-b = None  # type: Dict[int, x:y]  # E: Slice usage in type annotation is invalid
-c = None  # type: Dict[x:y]  # E: Slice usage in type annotation is invalid
-[out]
-
-[case testCorrectSlicesInAnnotations39]
-# flags: --python-version 3.9
-a: Annotated[int, slice(1, 2)]
-b: Dict[int, {x:y}]
-c: Dict[{x:y}]
-[out]
-MypyFile:1(
-  AssignmentStmt:2(
-    NameExpr(a)
-    TempNode:2(
-      Any)
-    Annotated?[int?, None])
-  AssignmentStmt:3(
-    NameExpr(b)
-    TempNode:3(
-      Any)
-    Dict?[int?, None])
-  AssignmentStmt:4(
-    NameExpr(c)
-    TempNode:4(
-      Any)
-    Dict?[None]))
-
-[case testCorrectSlicesInAnnotations38]
-# flags: --python-version 3.8
-a: Annotated[int, slice(1, 2)]
-b: Dict[int, {x:y}]
-c: Dict[{x:y}]
-[out]
-MypyFile:1(
-  AssignmentStmt:2(
-    NameExpr(a)
-    TempNode:2(
-      Any)
-    Annotated?[int?, None])
-  AssignmentStmt:3(
-    NameExpr(b)
-    TempNode:3(
-      Any)
-    Dict?[int?, None])
-  AssignmentStmt:4(
-    NameExpr(c)
-    TempNode:4(
-      Any)
-    Dict?[None]))
 
 [case testSliceInList39]
 # flags: --python-version 3.9
@@ -3190,7 +3123,7 @@ MypyFile:1(
         NameExpr(x)
         NameExpr(y)))))
 
-[case testConditionalExpressionInListComprehension]
+[case testConditionalExpressionInListComprehension2]
 a = [ 1 if x else 2 for x in y ]
 [out]
 MypyFile:1(
@@ -3396,7 +3329,7 @@ MypyFile:1()
 [out]
 MypyFile:1()
 
-[case testLatinUnixEncoding]
+[case testLatinUnixEncoding2]
 # coding: iso-latin-1
 [out]
 MypyFile:1()
