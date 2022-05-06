@@ -519,7 +519,7 @@ class StringFormatterChecker:
             dummy, fnam="<format>", module=None, options=self.chk.options, errors=temp_errors
         )
         if temp_errors.is_errors():
-            self.msg.fail('Syntax error in format specifier "{}"'.format(spec.field),
+            self.msg.fail(f'Syntax error in format specifier "{spec.field}"',
                           ctx, code=codes.STRING_FORMATTING)
             return TempNode(AnyType(TypeOfAny.from_error))
 
@@ -718,7 +718,7 @@ class StringFormatterChecker:
                 self.chk.check_subtype(rep_type, expected_type, replacements,
                                        message_registry.INCOMPATIBLE_TYPES_IN_STR_INTERPOLATION,
                                        'expression has type',
-                                       'placeholder with key \'%s\' has type' % specifier.key,
+                                       f'placeholder with key \'{specifier.key}\' has type',
                                        code=codes.STRING_FORMATTING)
                 if specifier.conv_type == 's':
                     self.check_s_special_cases(expr, rep_type, expr)

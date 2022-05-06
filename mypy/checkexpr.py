@@ -118,6 +118,16 @@ class TooManyUnions(Exception):
     """
 
 
+def allow_fast_container_literal(t: ProperType) -> bool:
+    return (
+        isinstance(t, Instance)
+        or (
+                isinstance(t, TupleType)
+                and all(allow_fast_container_literal(get_proper_type(it)) for it in t.items)
+        )
+    )
+
+
 def extract_refexpr_names(expr: RefExpr) -> Set[str]:
     """Recursively extracts all module references from a reference expression.
 
@@ -146,7 +156,7 @@ def extract_refexpr_names(expr: RefExpr) -> Set[str]:
             else:
                 break
         else:
-            raise AssertionError("Unknown RefExpr subclass: {}".format(type(expr)))
+            raise AssertionError(f"Unknown RefExpr subclass: {type(expr)}")
     return output
 
 
@@ -253,7 +263,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             result = self.object_type()
         else:
             if isinstance(node, PlaceholderNode):
-                assert False, 'PlaceholderNode %r leaked to checker' % node.fullname
+                assert False, f'PlaceholderNode {node.fullname!r} leaked to checker'
             # Unknown reference; use any type implicitly to avoid
             # generating extra type errors.
             result = AnyType(TypeOfAny.from_error)
@@ -427,7 +437,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             type_name = tuple_fallback(object_type).type.fullname
 
         if type_name is not None:
-            return '{}.{}'.format(type_name, method_name)
+            return f'{type_name}.{method_name}'
         else:
             return None
 
@@ -582,7 +592,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 self.chk.check_simple_assignment(
                     lvalue_type=item_expected_type, rvalue=item_value, context=item_value,
                     msg=message_registry.INCOMPATIBLE_TYPES,
-                    lvalue_name='TypedDict item "{}"'.format(item_name),
+                    lvalue_name=f'TypedDict item "{item_name}"',
                     rvalue_name='expression',
                     code=codes.TYPEDDICT_ITEM)
 
@@ -2189,7 +2199,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             e.method_type = method_type
             return result
         else:
-            raise RuntimeError('Unknown operator {}'.format(e.op))
+            raise RuntimeError(f'Unknown operator {e.op}')
 
     def visit_comparison_expr(self, e: ComparisonExpr) -> Type:
         """Type check a comparison expression.
@@ -2286,7 +2296,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     self.msg.dangerous_comparison(left_type, right_type, 'identity', e)
                 method_type = None
             else:
-                raise RuntimeError('Unknown comparison operator {}'.format(operator))
+                raise RuntimeError(f'Unknown comparison operator {operator}')
 
             e.method_types.append(method_type)
 
@@ -3265,7 +3275,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         Limitations:
          - no active type context
          - no star expressions
-         - the joined type of all entries must be an Instance type
+         - the joined type of all entries must be an Instance or Tuple type
         """
         ctx = self.type_context[-1]
         if ctx:
@@ -3277,7 +3287,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 return None
             values.append(self.accept(item))
         vt = join.join_type_list(values)
-        if not isinstance(vt, Instance):
+        if not allow_fast_container_literal(vt):
             return None
         return self.chk.named_generic_type(container_fullname, [vt])
 
@@ -3377,7 +3387,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         Limitations:
          - no active type context
          - only supported star expressions are other dict instances
-         - the joined types of all keys and values must be Instance types
+         - the joined types of all keys and values must be Instance or Tuple types
         """
         ctx = self.type_context[-1]
         if ctx:
@@ -3401,7 +3411,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 values.append(self.accept(value))
         kt = join.join_type_list(keys)
         vt = join.join_type_list(values)
-        if not (isinstance(kt, Instance) and isinstance(vt, Instance)):
+        if not (allow_fast_container_literal(kt) and allow_fast_container_literal(vt)):
             return None
         if stargs and (stargs[0] != kt or stargs[1] != vt):
             return None
