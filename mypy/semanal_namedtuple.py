@@ -53,7 +53,8 @@ class NamedTupleAnalyzer:
         self.options = options
         self.api = api
 
-    def analyze_namedtuple_classdef(self, defn: ClassDef, is_stub_file: bool
+    def analyze_namedtuple_classdef(self, defn: ClassDef, is_stub_file: bool,
+                                    is_func_scope: bool
                                     ) -> Tuple[bool, Optional[TypeInfo]]:
         """Analyze if given class definition can be a named tuple definition.
 
@@ -70,6 +71,8 @@ class NamedTupleAnalyzer:
                         # This is a valid named tuple, but some types are incomplete.
                         return True, None
                     items, types, default_items = result
+                    if is_func_scope and '@' not in defn.name:
+                        defn.name += '@' + str(defn.line)
                     info = self.build_namedtuple_typeinfo(
                         defn.name, items, types, default_items, defn.line)
                     defn.info = info
@@ -183,11 +186,16 @@ class NamedTupleAnalyzer:
             # Error. Construct dummy return value.
             if var_name:
                 name = var_name
+                if is_func_scope:
+                    name += '@' + str(call.line)
             else:
-                name = 'namedtuple@' + str(call.line)
+                name = var_name = 'namedtuple@' + str(call.line)
             info = self.build_namedtuple_typeinfo(name, [], [], {}, node.line)
-            self.store_namedtuple_info(info, name, call, is_typed)
-            return name, info
+            self.store_namedtuple_info(info, var_name, call, is_typed)
+            if name != var_name or is_func_scope:
+                # NOTE: we skip local namespaces since they are not serialized.
+                self.api.add_symbol_skip_local(name, info)
+            return var_name, info
         if not ok:
             # This is a valid named tuple but some types are not ready.
             return typename, None

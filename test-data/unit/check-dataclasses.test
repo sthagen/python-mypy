@@ -495,6 +495,19 @@ reveal_type(A.foo("foo"))  # N: Revealed type is "builtins.str"
 
 [builtins fixtures/dataclasses.pyi]
 
+[case testClassmethodShadowingFieldDoesNotCrash]
+# flags: --python-version 3.7
+from dataclasses import dataclass
+
+# This used to crash -- see #6217
+@dataclass
+class Foo:
+    bar: str
+    @classmethod  # E: Name "bar" already defined on line 7
+    def bar(cls) -> "Foo":
+        return cls('asdf')
+[builtins fixtures/dataclasses.pyi]
+
 [case testDataclassesClassVars]
 # flags: --python-version 3.7
 from dataclasses import dataclass
@@ -1553,6 +1566,20 @@ A(a=func).a()
 A(a=func).a = func  # E: Property "a" defined in "A" is read-only
 [builtins fixtures/dataclasses.pyi]
 
+[case testDataclassInFunctionDoesNotCrash]
+# flags: --python-version 3.7
+from dataclasses import dataclass
+
+def foo():
+    @dataclass
+    class Foo:
+        foo: int
+        # This used to crash (see #8703)
+        # The return type of __call__ here needs to be something undefined
+        # In order to trigger the crash that existed prior to #12762
+        def __call__(self) -> asdf: ...  # E: Name "asdf" is not defined
+[builtins fixtures/dataclasses.pyi]
+
 [case testDataclassesMultipleInheritanceWithNonDataclass]
 # flags: --python-version 3.10
 from dataclasses import dataclass
@@ -1684,4 +1711,36 @@ class C(Generic[T]):
 c: C[C]
 d: C[str]  # E: Type argument "str" of "C" must be a subtype of "C[Any]"
 C(x=2)
+[builtins fixtures/dataclasses.pyi]
+
+[case testDataclassGenericBoundToInvalidTypeVarDoesNotCrash]
+# flags: --python-version 3.7
+import dataclasses
+from typing import Generic, TypeVar
+
+T = TypeVar("T", bound="NotDefined")  # E: Name "NotDefined" is not defined
+
+@dataclasses.dataclass
+class C(Generic[T]):
+    x: float
+[builtins fixtures/dataclasses.pyi]
+
+[case testDataclassInitVarCannotBeSet]
+# flags: --python-version 3.7
+from dataclasses import dataclass, InitVar
+
+@dataclass
+class C:
+    x: InitVar[int] = 0
+    y: InitVar[str] = ''
+
+    def f(self) -> None:
+        # This works at runtime, but it seems like an abuse of the InitVar
+        # feature and thus we don't support it
+        self.x = 1  # E: "C" has no attribute "x"
+        self.y: str = 'x'  # E: "C" has no attribute "y"
+
+c = C()
+c2 = C(x=1)
+c.x  # E: "C" has no attribute "x"
 [builtins fixtures/dataclasses.pyi]
