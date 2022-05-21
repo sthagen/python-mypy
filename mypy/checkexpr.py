@@ -69,7 +69,7 @@ from mypy.typeops import (
     try_expanding_sum_type_to_union, tuple_fallback, make_simplified_union,
     true_only, false_only, erase_to_union_or_bound, function_type,
     callable_type, try_getting_str_literals, custom_special_method,
-    is_literal_type_like,
+    is_literal_type_like, simple_literal_type,
 )
 from mypy.message_registry import ErrorMessage
 import mypy.errorcodes as codes
@@ -177,6 +177,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
     # Type context for type inference
     type_context: List[Optional[Type]]
 
+    # cache resolved types in some cases
+    resolved_type: Dict[Expression, ProperType]
+
     strfrm_checker: StringFormatterChecker
     plugin: Plugin
 
@@ -196,6 +199,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # multiassign_from_union, or maybe even combine the two?
         self.type_overrides: Dict[Expression, Type] = {}
         self.strfrm_checker = StringFormatterChecker(self, self.chk, self.msg)
+
+        self.resolved_type = {}
+
+    def reset(self) -> None:
+        self.resolved_type = {}
 
     def visit_name_expr(self, e: NameExpr) -> Type:
         """Type check a name expression.
@@ -3269,13 +3277,13 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
     def visit_list_expr(self, e: ListExpr) -> Type:
         """Type check a list expression [...]."""
-        return self.check_lst_expr(e.items, 'builtins.list', '<list>', e)
+        return self.check_lst_expr(e, 'builtins.list', '<list>')
 
     def visit_set_expr(self, e: SetExpr) -> Type:
-        return self.check_lst_expr(e.items, 'builtins.set', '<set>', e)
+        return self.check_lst_expr(e, 'builtins.set', '<set>')
 
     def fast_container_type(
-            self, items: List[Expression], container_fullname: str
+            self, e: Union[ListExpr, SetExpr, TupleExpr], container_fullname: str
     ) -> Optional[Type]:
         """
         Fast path to determine the type of a list or set literal,
@@ -3290,21 +3298,28 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         ctx = self.type_context[-1]
         if ctx:
             return None
+        rt = self.resolved_type.get(e, None)
+        if rt is not None:
+            return rt if isinstance(rt, Instance) else None
         values: List[Type] = []
-        for item in items:
+        for item in e.items:
             if isinstance(item, StarExpr):
                 # fallback to slow path
+                self.resolved_type[e] = NoneType()
                 return None
             values.append(self.accept(item))
         vt = join.join_type_list(values)
         if not allow_fast_container_literal(vt):
+            self.resolved_type[e] = NoneType()
             return None
-        return self.chk.named_generic_type(container_fullname, [vt])
+        ct = self.chk.named_generic_type(container_fullname, [vt])
+        self.resolved_type[e] = ct
+        return ct
 
-    def check_lst_expr(self, items: List[Expression], fullname: str,
-                       tag: str, context: Context) -> Type:
+    def check_lst_expr(self, e: Union[ListExpr, SetExpr, TupleExpr], fullname: str,
+                       tag: str) -> Type:
         # fast path
-        t = self.fast_container_type(items, fullname)
+        t = self.fast_container_type(e, fullname)
         if t:
             return t
 
@@ -3323,10 +3338,10 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             variables=[tv])
         out = self.check_call(constructor,
                               [(i.expr if isinstance(i, StarExpr) else i)
-                               for i in items],
+                               for i in e.items],
                               [(nodes.ARG_STAR if isinstance(i, StarExpr) else nodes.ARG_POS)
-                               for i in items],
-                              context)[0]
+                               for i in e.items],
+                              e)[0]
         return remove_instance_last_known_values(out)
 
     def visit_tuple_expr(self, e: TupleExpr) -> Type:
@@ -3376,7 +3391,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 else:
                     # A star expression that's not a Tuple.
                     # Treat the whole thing as a variable-length tuple.
-                    return self.check_lst_expr(e.items, 'builtins.tuple', '<tuple>', e)
+                    return self.check_lst_expr(e, 'builtins.tuple', '<tuple>')
             else:
                 if not type_context_items or j >= len(type_context_items):
                     tt = self.accept(item)
@@ -3402,6 +3417,9 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         ctx = self.type_context[-1]
         if ctx:
             return None
+        rt = self.resolved_type.get(e, None)
+        if rt is not None:
+            return rt if isinstance(rt, Instance) else None
         keys: List[Type] = []
         values: List[Type] = []
         stargs: Optional[Tuple[Type, Type]] = None
@@ -3415,6 +3433,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 ):
                     stargs = (st.args[0], st.args[1])
                 else:
+                    self.resolved_type[e] = NoneType()
                     return None
             else:
                 keys.append(self.accept(key))
@@ -3422,10 +3441,14 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         kt = join.join_type_list(keys)
         vt = join.join_type_list(values)
         if not (allow_fast_container_literal(kt) and allow_fast_container_literal(vt)):
+            self.resolved_type[e] = NoneType()
             return None
         if stargs and (stargs[0] != kt or stargs[1] != vt):
+            self.resolved_type[e] = NoneType()
             return None
-        return self.chk.named_generic_type('builtins.dict', [kt, vt])
+        dt = self.chk.named_generic_type('builtins.dict', [kt, vt])
+        self.resolved_type[e] = dt
+        return dt
 
     def visit_dict_expr(self, e: DictExpr) -> Type:
         """Type check a dict expression.
@@ -3874,26 +3897,43 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         if_type = self.analyze_cond_branch(if_map, e.if_expr, context=ctx,
                                            allow_none_return=allow_none_return)
 
+        # we want to keep the narrowest value of if_type for union'ing the branches
+        # however, it would be silly to pass a literal as a type context. Pass the
+        # underlying fallback type instead.
+        if_type_fallback = simple_literal_type(get_proper_type(if_type)) or if_type
+
         # Analyze the right branch using full type context and store the type
         full_context_else_type = self.analyze_cond_branch(else_map, e.else_expr, context=ctx,
                                                           allow_none_return=allow_none_return)
+
         if not mypy.checker.is_valid_inferred_type(if_type):
             # Analyze the right branch disregarding the left branch.
             else_type = full_context_else_type
+            # we want to keep the narrowest value of else_type for union'ing the branches
+            # however, it would be silly to pass a literal as a type context. Pass the
+            # underlying fallback type instead.
+            else_type_fallback = simple_literal_type(get_proper_type(else_type)) or else_type
 
             # If it would make a difference, re-analyze the left
             # branch using the right branch's type as context.
-            if ctx is None or not is_equivalent(else_type, ctx):
+            if ctx is None or not is_equivalent(else_type_fallback, ctx):
                 # TODO: If it's possible that the previous analysis of
                 # the left branch produced errors that are avoided
                 # using this context, suppress those errors.
-                if_type = self.analyze_cond_branch(if_map, e.if_expr, context=else_type,
+                if_type = self.analyze_cond_branch(if_map, e.if_expr, context=else_type_fallback,
                                                    allow_none_return=allow_none_return)
 
+        elif if_type_fallback == ctx:
+            # There is no point re-running the analysis if if_type is equal to ctx.
+            # That would  be an exact duplicate of the work we just did.
+            # This optimization is particularly important to avoid exponential blowup with nested
+            # if/else expressions: https://github.com/python/mypy/issues/9591
+            # TODO: would checking for is_proper_subtype also work and cover more cases?
+            else_type = full_context_else_type
         else:
             # Analyze the right branch in the context of the left
             # branch's type.
-            else_type = self.analyze_cond_branch(else_map, e.else_expr, context=if_type,
+            else_type = self.analyze_cond_branch(else_map, e.else_expr, context=if_type_fallback,
                                                  allow_none_return=allow_none_return)
 
         # Only create a union type if the type context is a union, to be mostly
