@@ -12,6 +12,8 @@ import inspect
 import re
 import sys
 import types
+import typing
+import typing_extensions
 import warnings
 from functools import singledispatch
 from pathlib import Path
@@ -23,6 +25,7 @@ import mypy.build
 import mypy.modulefinder
 import mypy.state
 import mypy.types
+import mypy.version
 from mypy import nodes
 from mypy.config_parser import parse_config_file
 from mypy.options import Options
@@ -866,8 +869,32 @@ def verify_overloadedfuncdef(
 def verify_typevarexpr(
     stub: nodes.TypeVarExpr, runtime: MaybeMissing[Any], object_path: List[str]
 ) -> Iterator[Error]:
-    if False:
-        yield None
+    if isinstance(runtime, Missing):
+        # We seem to insert these typevars into NamedTuple stubs, but they
+        # don't exist at runtime. Just ignore!
+        if stub.name == "_NT":
+            return
+        yield Error(object_path, "is not present at runtime", stub, runtime)
+        return
+    if not isinstance(runtime, TypeVar):
+        yield Error(object_path, "is not a TypeVar", stub, runtime)
+        return
+
+
+@verify.register(nodes.ParamSpecExpr)
+def verify_paramspecexpr(
+    stub: nodes.ParamSpecExpr, runtime: MaybeMissing[Any], object_path: List[str]
+) -> Iterator[Error]:
+    if isinstance(runtime, Missing):
+        yield Error(object_path, "is not present at runtime", stub, runtime)
+        return
+    maybe_paramspec_types = (
+        getattr(typing, "ParamSpec", None), getattr(typing_extensions, "ParamSpec", None)
+    )
+    paramspec_types = tuple([t for t in maybe_paramspec_types if t is not None])
+    if not paramspec_types or not isinstance(runtime, paramspec_types):
+        yield Error(object_path, "is not a ParamSpec", stub, runtime)
+        return
 
 
 def _verify_readonly_property(stub: nodes.Decorator, runtime: Any) -> Iterator[str]:
@@ -1470,6 +1497,9 @@ def parse_options(args: List[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--check-typeshed", action="store_true", help="Check all stdlib modules in typeshed"
+    )
+    parser.add_argument(
+        "--version", action="version", version="%(prog)s " + mypy.version.__version__
     )
 
     return parser.parse_args(args)
