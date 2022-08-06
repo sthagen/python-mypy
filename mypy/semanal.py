@@ -222,7 +222,7 @@ from mypy.semanal_shared import (
     PRIORITY_FALLBACKS,
     SemanticAnalyzerInterface,
     calculate_tuple_fallback,
-    set_callable_name,
+    set_callable_name as set_callable_name,
 )
 from mypy.semanal_typeddict import TypedDictAnalyzer
 from mypy.tvar_scope import TypeVarLikeScope
@@ -275,6 +275,7 @@ from mypy.types import (
     UnboundType,
     get_proper_type,
     get_proper_types,
+    invalid_recursive_alias,
     is_named_instance,
 )
 from mypy.typevars import fill_typevars
@@ -1985,15 +1986,27 @@ class SemanticAnalyzer(
             if isinstance(sym.node, PlaceholderNode):
                 self.defer(defn)
                 return
-            if not isinstance(sym.node, TypeInfo) or sym.node.tuple_type is not None:
+
+            # Support type aliases, like `_Meta: TypeAlias = type`
+            if (
+                isinstance(sym.node, TypeAlias)
+                and sym.node.no_args
+                and isinstance(sym.node.target, ProperType)
+                and isinstance(sym.node.target, Instance)
+            ):
+                metaclass_info: Optional[Node] = sym.node.target.type
+            else:
+                metaclass_info = sym.node
+
+            if not isinstance(metaclass_info, TypeInfo) or metaclass_info.tuple_type is not None:
                 self.fail(f'Invalid metaclass "{metaclass_name}"', defn.metaclass)
                 return
-            if not sym.node.is_metaclass():
+            if not metaclass_info.is_metaclass():
                 self.fail(
                     'Metaclasses not inheriting from "type" are not supported', defn.metaclass
                 )
                 return
-            inst = fill_typevars(sym.node)
+            inst = fill_typevars(metaclass_info)
             assert isinstance(inst, Instance)
             defn.info.declared_metaclass = inst
         defn.info.metaclass_type = defn.info.calculate_metaclass_type()
@@ -2534,7 +2547,7 @@ class SemanticAnalyzer(
         """
         if not isinstance(rv, RefExpr):
             return False
-        if isinstance(rv.node, TypeVarExpr):
+        if isinstance(rv.node, TypeVarLikeExpr):
             self.fail(
                 'Type variable "{}" is invalid as target for type alias'.format(rv.fullname), rv
             )
@@ -3075,7 +3088,7 @@ class SemanticAnalyzer(
             )
             if not res:
                 return False
-            if self.options.enable_recursive_aliases:
+            if self.options.enable_recursive_aliases and not self.is_func_scope():
                 # Only marking incomplete for top-level placeholders makes recursive aliases like
                 # `A = Sequence[str | A]` valid here, similar to how we treat base classes in class
                 # definitions, allowing `class str(Sequence[str]): ...`
@@ -3119,6 +3132,8 @@ class SemanticAnalyzer(
             no_args=no_args,
             eager=eager,
         )
+        if invalid_recursive_alias({alias_node}, alias_node.target):
+            self.fail("Invalid recursive alias: a union item of itself", rvalue)
         if isinstance(s.rvalue, (IndexExpr, CallExpr)):  # CallExpr is for `void = type(None)`
             s.rvalue.analyzed = TypeAliasExpr(alias_node)
             s.rvalue.analyzed.line = s.line
@@ -5552,6 +5567,8 @@ class SemanticAnalyzer(
 
     def cannot_resolve_name(self, name: str, kind: str, ctx: Context) -> None:
         self.fail(f'Cannot resolve {kind} "{name}" (possible cyclic definition)', ctx)
+        if self.options.enable_recursive_aliases and self.is_func_scope():
+            self.note("Recursive types are not allowed at function scope", ctx)
 
     def qualified_name(self, name: str) -> str:
         if self.type is not None:

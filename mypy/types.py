@@ -236,8 +236,6 @@ class Type(mypy.nodes.Context):
 class TypeAliasType(Type):
     """A type alias to another type.
 
-    NOTE: this is not being used yet, and the implementation is still incomplete.
-
     To support recursive type aliases we don't immediately expand a type alias
     during semantic analysis, but create an instance of this type that records the target alias
     definition node (mypy.nodes.TypeAlias) and type arguments (for generic aliases).
@@ -1301,7 +1299,7 @@ class Instance(ProperType):
         args: Bogus[List[Type]] = _dummy,
         last_known_value: Bogus[Optional["LiteralType"]] = _dummy,
     ) -> "Instance":
-        return Instance(
+        new = Instance(
             self.type,
             args if args is not _dummy else self.args,
             self.line,
@@ -1310,6 +1308,9 @@ class Instance(ProperType):
             if last_known_value is not _dummy
             else self.last_known_value,
         )
+        new.can_be_true = self.can_be_true
+        new.can_be_false = self.can_be_false
+        return new
 
     def has_readable_member(self, name: str) -> bool:
         return self.type.has_readable_member(name)
@@ -3077,15 +3078,16 @@ class UnrollAliasVisitor(TrivialSyntheticTypeTranslator):
         return result
 
 
-def strip_type(typ: Type) -> ProperType:
+def strip_type(typ: Type) -> Type:
     """Make a copy of type without 'debugging info' (function name)."""
+    orig_typ = typ
     typ = get_proper_type(typ)
     if isinstance(typ, CallableType):
         return typ.copy_modified(name=None)
     elif isinstance(typ, Overloaded):
         return Overloaded([cast(CallableType, strip_type(item)) for item in typ.items])
     else:
-        return typ
+        return orig_typ
 
 
 def is_named_instance(t: Type, fullnames: Union[str, Tuple[str, ...]]) -> bool:
@@ -3191,6 +3193,40 @@ def union_items(typ: Type) -> List[ProperType]:
         return items
     else:
         return [typ]
+
+
+def invalid_recursive_alias(seen_nodes: Set[mypy.nodes.TypeAlias], target: Type) -> bool:
+    """Flag aliases like A = Union[int, A] (and similar mutual aliases).
+
+    Such aliases don't make much sense, and cause problems in later phases.
+    """
+    if isinstance(target, TypeAliasType):
+        if target.alias in seen_nodes:
+            return True
+        assert target.alias, f"Unfixed type alias {target.type_ref}"
+        return invalid_recursive_alias(seen_nodes | {target.alias}, get_proper_type(target))
+    assert isinstance(target, ProperType)
+    if not isinstance(target, UnionType):
+        return False
+    return any(invalid_recursive_alias(seen_nodes, item) for item in target.items)
+
+
+def bad_type_type_item(item: Type) -> bool:
+    """Prohibit types like Type[Type[...]].
+
+    Such types are explicitly prohibited by PEP 484. Also they cause problems
+    with recursive types like T = Type[T], because internal representation of
+    TypeType item is normalized (i.e. always a proper type).
+    """
+    item = get_proper_type(item)
+    if isinstance(item, TypeType):
+        return True
+    if isinstance(item, UnionType):
+        return any(
+            isinstance(get_proper_type(i), TypeType)
+            for i in flatten_nested_unions(item.items, handle_type_alias_type=True)
+        )
+    return False
 
 
 def is_union_with_any(tp: Type) -> bool:
