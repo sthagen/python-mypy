@@ -3,6 +3,8 @@
 # FIXME: Basically nothing in this file operates on the level of a
 # single module and it should be renamed.
 
+from __future__ import annotations
+
 import json
 import os
 from typing import Dict, Iterable, List, Optional, Set, Tuple, TypeVar
@@ -911,7 +913,7 @@ class GroupGenerator:
             "    goto fail;",
         )
         emitter.emit_line(
-            'modname = PyObject_GetAttrString((PyObject *){}, "__name__");'.format(module_static)
+            f'modname = PyObject_GetAttrString((PyObject *){module_static}, "__name__");'
         )
 
         module_globals = emitter.static_name("globals", module_name)

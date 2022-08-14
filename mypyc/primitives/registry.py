@@ -35,6 +35,8 @@ to rely on them for infrequently used ops. It's impractical to have
 optimized implementations of all ops.
 """
 
+from __future__ import annotations
+
 from typing import Dict, List, NamedTuple, Optional, Tuple
 from typing_extensions import Final
 
@@ -44,7 +46,6 @@ from mypyc.ir.rtypes import RType
 # Error kind for functions that return negative integer on exception. This
 # is only used for primitives. We translate it away during IR building.
 ERR_NEG_INT: Final = 10
-
 
 CFunctionDescription = NamedTuple(
     "CFunctionDescription",

@@ -1741,7 +1741,7 @@ class MessageBuilder:
         self, tp: TypeInfo, members: List[str], context: Context
     ) -> None:
         self.fail(
-            "Only protocols that don't have non-method members can be" " used with issubclass()",
+            "Only protocols that don't have non-method members can be used with issubclass()",
             context,
         )
         if len(members) < 3:
@@ -2291,6 +2291,11 @@ class CollectAllInstancesQuery(TypeTraverserVisitor):
     def visit_instance(self, t: Instance) -> None:
         self.instances.append(t)
         super().visit_instance(t)
+
+    def visit_type_alias_type(self, t: TypeAliasType) -> None:
+        if t.alias and not t.is_recursive:
+            t.alias.target.accept(self)
+        super().visit_type_alias_type(t)
 
 
 def find_type_overlaps(*types: Type) -> Set[str]:

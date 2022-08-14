@@ -31,6 +31,8 @@ Notes:
   even though some identities are preserved.
 """
 
+from __future__ import annotations
+
 from contextlib import contextmanager, nullcontext
 from typing import Dict, Iterator, Optional, Tuple, Union
 
@@ -140,6 +142,7 @@ class NodeStripVisitor(TraverserVisitor):
         TypeState.reset_subtype_caches_for(node.info)
         # Kill the TypeInfo, since there is none before semantic analysis.
         node.info = CLASSDEF_NO_INFO
+        node.analyzed = None
 
     def save_implicit_attributes(self, node: ClassDef) -> None:
         """Produce callbacks that re-add attributes defined on self."""

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import inspect
 import io
@@ -1267,6 +1269,104 @@ class StubtestUnit(unittest.TestCase):
                 error=None,
             )
             yield Case(stub="C = ParamSpec('C')", runtime="C = ParamSpec('C')", error=None)
+
+    @collect_cases
+    def test_abstract_methods(self) -> Iterator[Case]:
+        yield Case(
+            stub="from abc import abstractmethod",
+            runtime="from abc import abstractmethod",
+            error=None,
+        )
+        yield Case(
+            stub="""
+            class A1:
+                def some(self) -> None: ...
+            """,
+            runtime="""
+            class A1:
+                @abstractmethod
+                def some(self) -> None: ...
+            """,
+            error="A1.some",
+        )
+        yield Case(
+            stub="""
+            class A2:
+                @abstractmethod
+                def some(self) -> None: ...
+            """,
+            runtime="""
+            class A2:
+                @abstractmethod
+                def some(self) -> None: ...
+            """,
+            error=None,
+        )
+        # Runtime can miss `@abstractmethod`:
+        yield Case(
+            stub="""
+            class A3:
+                @abstractmethod
+                def some(self) -> None: ...
+            """,
+            runtime="""
+            class A3:
+                def some(self) -> None: ...
+            """,
+            error=None,
+        )
+
+    @collect_cases
+    def test_abstract_properties(self) -> Iterator[Case]:
+        yield Case(
+            stub="from abc import abstractmethod",
+            runtime="from abc import abstractmethod",
+            error=None,
+        )
+        # Ensure that `@property` also can be abstract:
+        yield Case(
+            stub="""
+            class AP1:
+                def some(self) -> int: ...
+            """,
+            runtime="""
+            class AP1:
+                @property
+                @abstractmethod
+                def some(self) -> int: ...
+            """,
+            error="AP1.some",
+        )
+        yield Case(
+            stub="""
+            class AP2:
+                @property
+                @abstractmethod
+                def some(self) -> int: ...
+            """,
+            runtime="""
+            class AP2:
+                @property
+                @abstractmethod
+                def some(self) -> int: ...
+            """,
+            error=None,
+        )
+        # Runtime can miss `@abstractmethod`:
+        yield Case(
+            stub="""
+            class AP3:
+                @property
+                @abstractmethod
+                def some(self) -> int: ...
+            """,
+            runtime="""
+            class AP3:
+                @property
+                def some(self) -> int: ...
+            """,
+            error=None,
+        )
 
 
 def remove_color_code(s: str) -> str:

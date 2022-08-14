@@ -563,6 +563,7 @@ def analyze_descriptor_access(descriptor_type: Type, mx: MemberContext) -> Type:
         The return type of the appropriate ``__get__`` overload for the descriptor.
     """
     instance_type = get_proper_type(mx.original_type)
+    orig_descriptor_type = descriptor_type
     descriptor_type = get_proper_type(descriptor_type)
 
     if isinstance(descriptor_type, UnionType):
@@ -571,10 +572,10 @@ def analyze_descriptor_access(descriptor_type: Type, mx: MemberContext) -> Type:
             [analyze_descriptor_access(typ, mx) for typ in descriptor_type.items]
         )
     elif not isinstance(descriptor_type, Instance):
-        return descriptor_type
+        return orig_descriptor_type
 
     if not descriptor_type.type.has_readable_member("__get__"):
-        return descriptor_type
+        return orig_descriptor_type
 
     dunder_get = descriptor_type.type.get_method("__get__")
     if dunder_get is None:
@@ -658,6 +659,18 @@ def instance_alias_type(alias: TypeAlias, named_type: Callable[[str], Instance])
     return expand_type_by_instance(tp, target)
 
 
+def is_instance_var(var: Var, info: TypeInfo) -> bool:
+    """Return if var is an instance variable according to PEP 526."""
+    return (
+        # check the type_info node is the var (not a decorated function, etc.)
+        var.name in info.names
+        and info.names[var.name].node is var
+        and not var.is_classvar
+        # variables without annotations are treated as classvar
+        and not var.is_inferred
+    )
+
+
 def analyze_var(
     name: str,
     var: Var,
@@ -689,7 +702,12 @@ def analyze_var(
         t = get_proper_type(expand_type_by_instance(typ, itype))
         result: Type = t
         typ = get_proper_type(typ)
-        if var.is_initialized_in_class and isinstance(typ, FunctionLike) and not typ.is_type_obj():
+        if (
+            var.is_initialized_in_class
+            and (not is_instance_var(var, info) or mx.is_operator)
+            and isinstance(typ, FunctionLike)
+            and not typ.is_type_obj()
+        ):
             if mx.is_lvalue:
                 if var.is_property:
                     if not var.is_settable_property:
