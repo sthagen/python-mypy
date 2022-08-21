@@ -162,6 +162,12 @@ print(bool(''))
 True
 False
 
+[case testCannotExtendBoolUnlessIgnored]
+class A(bool): pass
+class B(bool): pass  # type: ignore
+[out]
+_program.py:1: error: Cannot inherit from final class "bool"
+
 [case testCallBuiltinTypeObjectsWithoutArguments]
 import typing
 print(int())
@@ -1124,9 +1130,9 @@ _testTypedDictMappingMethods.py:5: note: Revealed type is "builtins.str"
 _testTypedDictMappingMethods.py:6: note: Revealed type is "typing.Iterator[builtins.str]"
 _testTypedDictMappingMethods.py:7: note: Revealed type is "builtins.int"
 _testTypedDictMappingMethods.py:8: note: Revealed type is "builtins.bool"
-_testTypedDictMappingMethods.py:9: note: Revealed type is "typing.KeysView[builtins.str]"
-_testTypedDictMappingMethods.py:10: note: Revealed type is "typing.ItemsView[builtins.str, builtins.object]"
-_testTypedDictMappingMethods.py:11: note: Revealed type is "typing.ValuesView[builtins.object]"
+_testTypedDictMappingMethods.py:9: note: Revealed type is "_collections_abc.dict_keys[builtins.str, builtins.object]"
+_testTypedDictMappingMethods.py:10: note: Revealed type is "_collections_abc.dict_items[builtins.str, builtins.object]"
+_testTypedDictMappingMethods.py:11: note: Revealed type is "_collections_abc.dict_values[builtins.str, builtins.object]"
 _testTypedDictMappingMethods.py:12: note: Revealed type is "TypedDict('_testTypedDictMappingMethods.Cell', {'value': builtins.int})"
 _testTypedDictMappingMethods.py:13: note: Revealed type is "builtins.int"
 _testTypedDictMappingMethods.py:15: error: Unexpected TypedDict key "invalid"
@@ -1612,3 +1618,21 @@ class Foo(Enum):
 _testEnumValueWithPlaceholderNodeType.py:5: error: Incompatible types in assignment (expression has type "object", variable has type "Foo")
 _testEnumValueWithPlaceholderNodeType.py:6: error: Incompatible types in assignment (expression has type "object", variable has type "Foo")
 _testEnumValueWithPlaceholderNodeType.py:6: error: Name "Missing" is not defined
+
+[case testTypeshedRecursiveTypesExample]
+# flags: --enable-recursive-aliases
+from typing import List, Union
+
+Recursive = Union[str, List["Recursive"]]
+
+def foo(r: Recursive) -> None:
+    if not isinstance(r, str):
+        if r:
+            foo(r[0])
+    if not isinstance(r, list):
+        r.casefold()
+
+foo("")
+foo(list(""))
+foo(list((list(""), "")))
+[out]
