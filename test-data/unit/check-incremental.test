@@ -5989,3 +5989,36 @@ s: str = td["value"]
 [out]
 [out2]
 tmp/b.py:3: error: Incompatible types in assignment (expression has type "int", variable has type "str")
+
+[case testUnpackKwargsSerialize]
+import m
+[file lib.py]
+from typing_extensions import Unpack, TypedDict
+
+class Person(TypedDict):
+    name: str
+    age: int
+
+def foo(**kwargs: Unpack[Person]):
+    ...
+
+[file m.py]
+from lib import foo
+foo(name='Jennifer', age=38)
+[file m.py.2]
+from lib import foo
+foo(name='Jennifer', age="38")
+[builtins fixtures/dict.pyi]
+[out]
+[out2]
+tmp/m.py:2: error: Argument "age" to "foo" has incompatible type "str"; expected "int"
+
+[case testDisableEnableErrorCodesIncremental]
+# flags: --disable-error-code truthy-bool
+# flags2: --enable-error-code truthy-bool
+def foo() -> int: ...
+if foo:
+    ...
+[out]
+[out2]
+main:4: error: Function "Callable[[], int]" could always be true in boolean context

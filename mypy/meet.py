@@ -78,6 +78,10 @@ def meet_types(s: Type, t: Type) -> ProperType:
         return t
     if isinstance(s, UnionType) and not isinstance(t, UnionType):
         s, t = t, s
+
+    # Meets/joins require callable type normalization.
+    s, t = join.normalize_callables(s, t)
+
     return t.accept(TypeMeetVisitor(s))
 
 
@@ -126,6 +130,14 @@ def narrow_declared_type(declared: Type, narrowed: Type) -> Type:
     elif isinstance(declared, Instance):
         if declared.type.alt_promote:
             # Special case: low-level integer type can't be narrowed
+            return original_declared
+        if (
+            isinstance(narrowed, Instance)
+            and narrowed.type.alt_promote
+            and narrowed.type.alt_promote is declared.type
+        ):
+            # Special case: 'int' can't be narrowed down to a native int type such as
+            # i64, since they have different runtime representations.
             return original_declared
         return meet_types(original_declared, original_narrowed)
     elif isinstance(declared, (TupleType, TypeType, LiteralType)):
@@ -211,6 +223,7 @@ def is_overlapping_types(
     right: Type,
     ignore_promotions: bool = False,
     prohibit_none_typevar_overlap: bool = False,
+    ignore_uninhabited: bool = False,
 ) -> bool:
     """Can a value of type 'left' also be of type 'right' or vice-versa?
 
@@ -235,6 +248,7 @@ def is_overlapping_types(
             right,
             ignore_promotions=ignore_promotions,
             prohibit_none_typevar_overlap=prohibit_none_typevar_overlap,
+            ignore_uninhabited=ignore_uninhabited,
         )
 
     # We should never encounter this type.
@@ -282,8 +296,10 @@ def is_overlapping_types(
     ):
         return True
 
-    if is_proper_subtype(left, right, ignore_promotions=ignore_promotions) or is_proper_subtype(
-        right, left, ignore_promotions=ignore_promotions
+    if is_proper_subtype(
+        left, right, ignore_promotions=ignore_promotions, ignore_uninhabited=ignore_uninhabited
+    ) or is_proper_subtype(
+        right, left, ignore_promotions=ignore_promotions, ignore_uninhabited=ignore_uninhabited
     ):
         return True
 
@@ -425,8 +441,10 @@ def is_overlapping_types(
     if isinstance(left, Instance) and isinstance(right, Instance):
         # First we need to handle promotions and structural compatibility for instances
         # that came as fallbacks, so simply call is_subtype() to avoid code duplication.
-        if is_subtype(left, right, ignore_promotions=ignore_promotions) or is_subtype(
-            right, left, ignore_promotions=ignore_promotions
+        if is_subtype(
+            left, right, ignore_promotions=ignore_promotions, ignore_uninhabited=ignore_uninhabited
+        ) or is_subtype(
+            right, left, ignore_promotions=ignore_promotions, ignore_uninhabited=ignore_uninhabited
         ):
             return True
 
@@ -467,7 +485,7 @@ def is_overlapping_types(
     # Note: it's unclear however, whether returning False is the right thing
     # to do when inferring reachability -- see  https://github.com/python/mypy/issues/5529
 
-    assert type(left) != type(right)
+    assert type(left) != type(right), f"{type(left)} vs {type(right)}"
     return False
 
 
