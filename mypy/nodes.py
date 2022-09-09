@@ -1113,7 +1113,7 @@ class ClassDef(Statement):
     ) -> None:
         super().__init__()
         self.name = name
-        self.fullname = None  # type: ignore
+        self.fullname = None  # type: ignore[assignment]
         self.defs = defs
         self.type_vars = type_vars or []
         self.base_type_exprs = base_type_exprs or []
@@ -3580,7 +3580,10 @@ class SymbolTableNode:
             if prefix is not None:
                 fullname = self.node.fullname
                 if (
-                    fullname is not None
+                    # See the comment above SymbolNode.fullname -- fullname can often be None,
+                    # but for complex reasons it's annotated as being `Bogus[str]` instead of `str | None`,
+                    # meaning mypy erroneously thinks the `fullname is not None` check here is redundant
+                    fullname is not None  # type: ignore[redundant-expr]
                     and "." in fullname
                     and fullname != prefix + "." + name
                     and not (isinstance(self.node, Var) and self.node.from_module_getattr)
@@ -3712,7 +3715,7 @@ def check_arg_kinds(
         if kind == ARG_POS:
             if is_var_arg or is_kw_arg or seen_named or seen_opt:
                 fail(
-                    "Required positional args may not appear " "after default, named or var args",
+                    "Required positional args may not appear after default, named or var args",
                     node,
                 )
                 break

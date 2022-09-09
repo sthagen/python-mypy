@@ -577,7 +577,7 @@ class ConstraintBuilderVisitor(TypeVisitor[List[Constraint]]):
         if isinstance(actual, Instance):
             instance = actual
             erased = erase_typevars(template)
-            assert isinstance(erased, Instance)  # type: ignore
+            assert isinstance(erased, Instance)  # type: ignore[misc]
             # We always try nominal inference if possible,
             # it is much faster than the structural one.
             if self.direction == SUBTYPE_OF and template.type.has_base(instance.type.fullname):
@@ -644,11 +644,20 @@ class ConstraintBuilderVisitor(TypeVisitor[List[Constraint]]):
                             isinstance(template_unpack, Instance)
                             and template_unpack.type.fullname == "builtins.tuple"
                         ):
-                            # TODO: check homogenous tuple case
-                            raise NotImplementedError
+                            for item in mapped_middle:
+                                res.extend(
+                                    infer_constraints(
+                                        template_unpack.args[0], item, self.direction
+                                    )
+                                )
                         elif isinstance(template_unpack, TupleType):
-                            # TODO: check tuple case
-                            raise NotImplementedError
+                            if len(template_unpack.items) == len(mapped_middle):
+                                for template_arg, item in zip(
+                                    template_unpack.items, mapped_middle
+                                ):
+                                    res.extend(
+                                        infer_constraints(template_arg, item, self.direction)
+                                    )
 
                     mapped_args = mapped_prefix + mapped_suffix
                     template_args = template_prefix + template_suffix
@@ -791,7 +800,7 @@ class ConstraintBuilderVisitor(TypeVisitor[List[Constraint]]):
             # The above is safe since at this point we know that 'instance' is a subtype
             # of (erased) 'template', therefore it defines all protocol members
             res.extend(infer_constraints(temp, inst, self.direction))
-            if mypy.subtypes.IS_SETTABLE in mypy.subtypes.get_member_flags(member, protocol.type):
+            if mypy.subtypes.IS_SETTABLE in mypy.subtypes.get_member_flags(member, protocol):
                 # Settable members are invariant, add opposite constraints
                 res.extend(infer_constraints(temp, inst, neg_op(self.direction)))
         return res
