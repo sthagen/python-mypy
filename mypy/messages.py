@@ -1231,6 +1231,14 @@ class MessageBuilder:
             code=codes.ARG_TYPE,
         )
 
+    def unsafe_super(self, method: str, cls: str, ctx: Context) -> None:
+        self.fail(
+            'Call to abstract method "{}" of "{}" with trivial body'
+            " via super() is unsafe".format(method, cls),
+            ctx,
+            code=codes.SAFE_SUPER,
+        )
+
     def too_few_string_formatting_arguments(self, context: Context) -> None:
         self.fail("Not enough arguments for format string", context, code=codes.STRING_FORMATTING)
 
@@ -1302,8 +1310,17 @@ class MessageBuilder:
             context,
         )
 
-    def incompatible_conditional_function_def(self, defn: FuncDef) -> None:
+    def incompatible_conditional_function_def(
+        self, defn: FuncDef, old_type: FunctionLike, new_type: FunctionLike
+    ) -> None:
         self.fail("All conditional function variants must have identical signatures", defn)
+        if isinstance(old_type, (CallableType, Overloaded)) and isinstance(
+            new_type, (CallableType, Overloaded)
+        ):
+            self.note("Original:", defn)
+            self.pretty_callable_or_overload(old_type, defn, offset=4)
+            self.note("Redefinition:", defn)
+            self.pretty_callable_or_overload(new_type, defn, offset=4)
 
     def cannot_instantiate_abstract_class(
         self, class_name: str, abstract_attributes: dict[str, bool], context: Context

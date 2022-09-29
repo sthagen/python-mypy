@@ -1443,7 +1443,7 @@ reveal_type(x['a']['b']) # N: Revealed type is "builtins.int"
 [case testSelfRecursiveTypedDictInheriting]
 
 from mypy_extensions import TypedDict
-
+# flags: --disable-recursive-aliases
 class MovieBase(TypedDict):
     name: str
     year: int
@@ -1457,7 +1457,7 @@ reveal_type(m['director']['name']) # N: Revealed type is "Any"
 [out]
 
 [case testSubclassOfRecursiveTypedDict]
-
+# flags: --disable-recursive-aliases
 from typing import List
 from mypy_extensions import TypedDict
 
@@ -2550,7 +2550,7 @@ from typing import TypedDict, TypeVar
 
 T = TypeVar("T")
 TD = TypedDict("TD", {"key": int, "value": T})
-reveal_type(TD)  # N: Revealed type is "def [T] (*, key: builtins.int, value: T`-1) -> TypedDict('__main__.TD', {'key': builtins.int, 'value': T`-1})"
+reveal_type(TD)  # N: Revealed type is "def [T] (*, key: builtins.int, value: T`1) -> TypedDict('__main__.TD', {'key': builtins.int, 'value': T`1})"
 
 tds: TD[str]
 reveal_type(tds)  # N: Revealed type is "TypedDict('__main__.TD', {'key': builtins.int, 'value': builtins.str})"
