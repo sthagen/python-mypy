@@ -893,6 +893,10 @@ class SubtypeVisitor(TypeVisitor[bool]):
         if isinstance(right, TypeType):
             return self._is_subtype(left.item, right.item)
         if isinstance(right, CallableType):
+            if self.proper_subtype and not right.is_type_obj():
+                # We can't accept `Type[X]` as a *proper* subtype of Callable[P, X]
+                # since this will break transitivity of subtyping.
+                return False
             # This is unsound, we don't check the __init__ signature.
             return self._is_subtype(left.item, right.ret_type)
         if isinstance(right, Instance):
@@ -1078,6 +1082,7 @@ def find_member(
             and name not in ["__getattr__", "__setattr__", "__getattribute__"]
             and not is_operator
             and not class_obj
+            and itype.extra_attrs is None  # skip ModuleType.__getattr__
         ):
             for method_name in ("__getattribute__", "__getattr__"):
                 # Normally, mypy assumes that instances that define __getattr__ have all
