@@ -84,6 +84,7 @@ from mypy.types import (
     UnboundType,
     UninhabitedType,
     UnionType,
+    UnpackType,
     get_proper_type,
     get_proper_types,
 )
@@ -2148,6 +2149,14 @@ class MessageBuilder:
                 ctx,
             )
 
+    def annotation_in_unchecked_function(self, context: Context) -> None:
+        self.note(
+            "By default the bodies of untyped functions are not checked,"
+            " consider using --check-untyped-defs",
+            context,
+            code=codes.ANNOTATION_UNCHECKED,
+        )
+
 
 def quote_type_string(type_string: str) -> str:
     """Quotes a type representation for use in messages."""
@@ -2249,6 +2258,8 @@ def format_type_inner(
         else:
             # There are type arguments. Convert the arguments to strings.
             return f"{base_str}[{format_list(itype.args)}]"
+    elif isinstance(typ, UnpackType):
+        return f"Unpack[{format(typ.type)}]"
     elif isinstance(typ, TypeVarType):
         # This is similar to non-generic instance types.
         return typ.name
@@ -2702,6 +2713,17 @@ def for_function(callee: CallableType) -> str:
     if name is not None:
         return f" for {name}"
     return ""
+
+
+def wrong_type_arg_count(n: int, act: str, name: str) -> str:
+    s = f"{n} type arguments"
+    if n == 0:
+        s = "no type arguments"
+    elif n == 1:
+        s = "1 type argument"
+    if act == "0":
+        act = "none"
+    return f'"{name}" expects {s}, but {act} given'
 
 
 def find_defining_module(modules: dict[str, MypyFile], typ: CallableType) -> MypyFile | None:
