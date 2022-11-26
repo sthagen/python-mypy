@@ -90,6 +90,16 @@ else:
 a = y + x  # E: Name "x" may be undefined
 a = y + z  # E: Name "z" may be undefined
 
+[case testIndexExpr]
+# flags: --enable-error-code partially-defined
+
+if int():
+    *x, y = (1, 2)
+else:
+    x = [1, 2]
+a = x  # No error.
+b = y  # E: Name "y" may be undefined
+
 [case testRedefined]
 # flags: --enable-error-code partially-defined
 y = 3
@@ -103,6 +113,32 @@ else:
     x = y + 2
 
 x = y + 2
+
+[case testFunction]
+# flags: --enable-error-code partially-defined
+def f0() -> None:
+    if int():
+        def some_func() -> None:
+            pass
+
+    some_func()  # E: Name "some_func" may be undefined
+
+def f1() -> None:
+    if int():
+        def some_func() -> None:
+            pass
+    else:
+        def some_func() -> None:
+            pass
+
+    some_func()  # No error.
+
+[case testLambda]
+# flags: --enable-error-code partially-defined
+def f0(b: bool) -> None:
+    if b:
+        fn = lambda: 2
+    y = fn   # E: Name "fn" may be undefined
 
 [case testGenerator]
 # flags: --enable-error-code partially-defined
@@ -205,6 +241,48 @@ def f5() -> int:
     else:
         return 3
     return 1
+
+[case testDefinedDifferentBranchUseBeforeDef]
+# flags: --enable-error-code partially-defined --enable-error-code use-before-def
+
+def f0() -> None:
+    if int():
+        x = 0
+    else:
+        y = x  # E: Name "x" is used before definition
+        z = x  # E: Name "x" is used before definition
+
+def f1() -> None:
+    x = 1
+    if int():
+        x = 0
+    else:
+        y = x  # No error.
+
+
+[case testDefinedDifferentBranchPartiallyDefined]
+# flags: --enable-error-code partially-defined --enable-error-code use-before-def
+
+def f0() -> None:
+    first_iter = True
+    for i in [0, 1]:
+        if first_iter:
+            first_iter = False
+            x = 0
+        else:
+            # This is technically a false positive but mypy isn't smart enough for this yet.
+            y = x  # E: Name "x" may be undefined
+            z = x  # E: Name "x" may be undefined
+
+
+def f1() -> None:
+    while True:
+        if int():
+            x = 0
+        else:
+            y = x  # E: Name "x" may be undefined
+            z = x  # E: Name "x" may be undefined
+
 
 [case testAssert]
 # flags: --enable-error-code partially-defined
@@ -367,3 +445,139 @@ def f() -> None:
     d = a
     d = b
 [builtins fixtures/tuple.pyi]
+
+[case testUnreachable]
+# flags: --enable-error-code partially-defined
+import typing
+
+if typing.TYPE_CHECKING:
+    x = 1
+elif int():
+    y = 1
+else:
+    y = 2
+a = x
+
+if not typing.TYPE_CHECKING:
+    pass
+else:
+    z = 1
+a = z
+[typing fixtures/typing-medium.pyi]
+
+[case testUseBeforeDef]
+# flags: --enable-error-code use-before-def
+
+def f0() -> None:
+    x = y  # E: Name "y" is used before definition
+    y: int = 1
+
+def f2() -> None:
+    if int():
+        pass
+    else:
+        # No use-before-def error.
+        y = z  # E: Name "z" is not defined
+
+    def inner2() -> None:
+        z = 0
+
+def f3() -> None:
+    if int():
+        pass
+    else:
+        y = z  # E: Name "z" is used before definition
+    z: int = 2
+
+def f4() -> None:
+    if int():
+        pass
+    else:
+        y = z  # E: Name "z" is used before definition
+        x = z  # E: Name "z" is used before definition
+    z: int = 2
+
+[case testUseBeforeDefImportsBasic]
+# flags: --enable-error-code use-before-def
+import foo  # type: ignore
+import x.y  # type: ignore
+
+def f0() -> None:
+    a = foo  # No error.
+    foo: int = 1
+
+def f1() -> None:
+    a = y  # E: Name "y" is used before definition
+    y: int = 1
+
+def f2() -> None:
+    a = x  # No error.
+    x: int = 1
+
+def f3() -> None:
+    a = x.y  # No error.
+    x: int = 1
+
+[case testUseBeforeDefImportBasicRename]
+# flags: --enable-error-code use-before-def
+import x.y as z  # type: ignore
+from typing import Any
+
+def f0() -> None:
+    a = z  # No error.
+    z: int = 1
+
+def f1() -> None:
+    a = x  # E: Name "x" is used before definition
+    x: int = 1
+
+def f2() -> None:
+    a = x.y  # E: Name "x" is used before definition
+    x: Any = 1
+
+def f3() -> None:
+    a = y  # E: Name "y" is used before definition
+    y: int = 1
+
+[case testUseBeforeDefImportFrom]
+# flags: --enable-error-code use-before-def
+from foo import x  # type: ignore
+
+def f0() -> None:
+    a = x  # No error.
+    x: int = 1
+
+[case testUseBeforeDefImportFromRename]
+# flags: --enable-error-code use-before-def
+from foo import x as y  # type: ignore
+
+def f0() -> None:
+    a = y  # No error.
+    y: int = 1
+
+def f1() -> None:
+    a = x  # E: Name "x" is used before definition
+    x: int = 1
+
+[case testUseBeforeDefFunctionDeclarations]
+# flags: --enable-error-code use-before-def
+
+def f0() -> None:
+    def inner() -> None:
+        pass
+
+    inner()  # No error.
+    inner = lambda: None
+
+[case testUseBeforeDefBuiltins]
+# flags: --enable-error-code use-before-def
+
+def f0() -> None:
+    s = type(123)
+    type = "abc"
+    a = type
+
+[case testUseBeforeDefImplicitModuleAttrs]
+# flags: --enable-error-code use-before-def
+a = __name__  # No error.
+__name__ = "abc"
