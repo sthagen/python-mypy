@@ -261,10 +261,10 @@ def _verify_exported_names(
     if not (names_in_runtime_not_stub or names_in_stub_not_runtime):
         return
     yield Error(
-        object_path,
+        object_path + ["__all__"],
         (
             "names exported from the stub do not correspond to the names exported at runtime. "
-            "This is probably due to an inaccurate `__all__` in the stub or things being missing from the stub."
+            "This is probably due to things being missing from the stub, or if present, an inaccurate `__all__` in the stub"
         ),
         # Pass in MISSING instead of the stub and runtime objects, as the line numbers aren't very
         # relevant here, and it makes for a prettier error message
@@ -1243,6 +1243,8 @@ IGNORED_MODULE_DUNDERS: typing_extensions.Final = frozenset(
         "__annotations__",
         "__path__",  # mypy adds __path__ to packages, but C packages don't have it
         "__getattr__",  # resulting behaviour might be typed explicitly
+        # Created by `warnings.warn`, does not make much sense to have in stubs:
+        "__warningregistry__",
         # TODO: remove the following from this list
         "__author__",
         "__version__",

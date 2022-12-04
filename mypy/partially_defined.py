@@ -7,6 +7,8 @@ from mypy.nodes import (
     AssignmentExpr,
     AssignmentStmt,
     BreakStmt,
+    ClassDef,
+    Context,
     ContinueStmt,
     DictionaryComprehension,
     Expression,
@@ -15,6 +17,7 @@ from mypy.nodes import (
     FuncDef,
     FuncItem,
     GeneratorExpr,
+    GlobalDecl,
     IfStmt,
     Import,
     ImportFrom,
@@ -23,6 +26,7 @@ from mypy.nodes import (
     Lvalue,
     MatchStmt,
     NameExpr,
+    NonlocalDecl,
     RaiseStmt,
     RefExpr,
     ReturnStmt,
@@ -32,6 +36,7 @@ from mypy.nodes import (
     WithStmt,
     implicit_module_attrs,
 )
+from mypy.options import Options
 from mypy.patterns import AsPattern, StarredPattern
 from mypy.reachability import ALWAYS_TRUE, infer_pattern_value
 from mypy.traverser import ExtendedTraverserVisitor
@@ -108,33 +113,37 @@ class BranchStatement:
         branch = self.branches[-1]
         return name not in branch.may_be_defined and name not in branch.must_be_defined
 
-    def is_defined_in_different_branch(self, name: str) -> bool:
+    def is_defined_in_a_branch(self, name: str) -> bool:
         assert len(self.branches) > 0
-        if not self.is_undefined(name):
-            return False
-        for b in self.branches[: len(self.branches) - 1]:
+        for b in self.branches:
             if name in b.must_be_defined or name in b.may_be_defined:
                 return True
         return False
 
     def done(self) -> BranchState:
-        branches = [b for b in self.branches if not b.skipped]
-        if len(branches) == 0:
-            return BranchState(skipped=True)
-        if len(branches) == 1:
-            return branches[0]
-
-        # must_be_defined is a union of must_be_defined of all branches.
-        must_be_defined = set(branches[0].must_be_defined)
-        for b in branches[1:]:
-            must_be_defined.intersection_update(b.must_be_defined)
-        # may_be_defined are all variables that are not must be defined.
+        # First, compute all vars, including skipped branches. We include skipped branches
+        # because our goal is to capture all variables that semantic analyzer would
+        # consider defined.
         all_vars = set()
-        for b in branches:
+        for b in self.branches:
             all_vars.update(b.may_be_defined)
             all_vars.update(b.must_be_defined)
+        # For the rest of the things, we only care about branches that weren't skipped.
+        non_skipped_branches = [b for b in self.branches if not b.skipped]
+        if len(non_skipped_branches) > 0:
+            must_be_defined = non_skipped_branches[0].must_be_defined
+            for b in non_skipped_branches[1:]:
+                must_be_defined.intersection_update(b.must_be_defined)
+        else:
+            must_be_defined = set()
+        # Everything that wasn't defined in all branches but was defined
+        # in at least one branch should be in `may_be_defined`!
         may_be_defined = all_vars.difference(must_be_defined)
-        return BranchState(may_be_defined=may_be_defined, must_be_defined=must_be_defined)
+        return BranchState(
+            must_be_defined=must_be_defined,
+            may_be_defined=may_be_defined,
+            skipped=len(non_skipped_branches) == 0,
+        )
 
 
 class Scope:
@@ -212,7 +221,13 @@ class DefinedVariableTracker:
     def is_defined_in_different_branch(self, name: str) -> bool:
         """This will return true if a variable is defined in a branch that's not the current branch."""
         assert len(self._scope().branch_stmts) > 0
-        return self._scope().branch_stmts[-1].is_defined_in_different_branch(name)
+        stmt = self._scope().branch_stmts[-1]
+        if not stmt.is_undefined(name):
+            return False
+        for stmt in self._scope().branch_stmts:
+            if stmt.is_defined_in_a_branch(name):
+                return True
+        return False
 
     def is_undefined(self, name: str) -> bool:
         assert len(self._scope().branch_stmts) > 0
@@ -221,6 +236,11 @@ class DefinedVariableTracker:
 
 def refers_to_builtin(o: RefExpr) -> bool:
     return o.fullname is not None and o.fullname.startswith("builtins.")
+
+
+class Loop:
+    def __init__(self) -> None:
+        self.has_break = False
 
 
 class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
@@ -241,21 +261,45 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
     handled by the semantic analyzer.
     """
 
-    def __init__(self, msg: MessageBuilder, type_map: dict[Expression, Type]) -> None:
+    def __init__(
+        self, msg: MessageBuilder, type_map: dict[Expression, Type], options: Options
+    ) -> None:
         self.msg = msg
         self.type_map = type_map
-        self.loop_depth = 0
+        self.options = options
+        self.loops: list[Loop] = []
         self.tracker = DefinedVariableTracker()
         for name in implicit_module_attrs:
             self.tracker.record_definition(name)
 
+    def var_used_before_def(self, name: str, context: Context) -> None:
+        if self.msg.errors.is_error_code_enabled(errorcodes.USE_BEFORE_DEF):
+            self.msg.var_used_before_def(name, context)
+
+    def variable_may_be_undefined(self, name: str, context: Context) -> None:
+        if self.msg.errors.is_error_code_enabled(errorcodes.PARTIALLY_DEFINED):
+            self.msg.variable_may_be_undefined(name, context)
+
+    def process_definition(self, name: str) -> None:
+        # Was this name previously used? If yes, it's a use-before-definition error.
+        refs = self.tracker.pop_undefined_ref(name)
+        for ref in refs:
+            self.var_used_before_def(name, ref)
+        self.tracker.record_definition(name)
+
+    def visit_global_decl(self, o: GlobalDecl) -> None:
+        for name in o.names:
+            self.process_definition(name)
+        super().visit_global_decl(o)
+
+    def visit_nonlocal_decl(self, o: NonlocalDecl) -> None:
+        for name in o.names:
+            self.process_definition(name)
+        super().visit_nonlocal_decl(o)
+
     def process_lvalue(self, lvalue: Lvalue | None) -> None:
         if isinstance(lvalue, NameExpr):
-            # Was this name previously used? If yes, it's a use-before-definition error.
-            refs = self.tracker.pop_undefined_ref(lvalue.name)
-            for ref in refs:
-                self.msg.var_used_before_def(lvalue.name, ref)
-            self.tracker.record_definition(lvalue.name)
+            self.process_definition(lvalue.name)
         elif isinstance(lvalue, StarExpr):
             self.process_lvalue(lvalue.expr)
         elif isinstance(lvalue, (ListExpr, TupleExpr)):
@@ -305,12 +349,14 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
         self.tracker.end_branch_statement()
 
     def visit_func_def(self, o: FuncDef) -> None:
-        self.tracker.record_definition(o.name)
+        self.process_definition(o.name)
         self.tracker.enter_scope()
         super().visit_func_def(o)
         self.tracker.exit_scope()
 
     def visit_func(self, o: FuncItem) -> None:
+        if o.is_dynamic() and not self.options.check_untyped_defs:
+            return
         if o.arguments is not None:
             for arg in o.arguments:
                 self.tracker.record_definition(arg.variable.name)
@@ -335,13 +381,23 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
         self.process_lvalue(o.index)
         o.index.accept(self)
         self.tracker.start_branch_statement()
-        self.loop_depth += 1
+        loop = Loop()
+        self.loops.append(loop)
         o.body.accept(self)
         self.tracker.next_branch()
-        if o.else_body:
-            o.else_body.accept(self)
-        self.loop_depth -= 1
         self.tracker.end_branch_statement()
+        if o.else_body is not None:
+            # If the loop has a `break` inside, `else` is executed conditionally.
+            # If the loop doesn't have a `break` either the function will return or
+            # execute the `else`.
+            has_break = loop.has_break
+            if has_break:
+                self.tracker.start_branch_statement()
+                self.tracker.next_branch()
+            o.else_body.accept(self)
+            if has_break:
+                self.tracker.end_branch_statement()
+        self.loops.pop()
 
     def visit_return_stmt(self, o: ReturnStmt) -> None:
         super().visit_return_stmt(o)
@@ -367,6 +423,8 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
 
     def visit_break_stmt(self, o: BreakStmt) -> None:
         super().visit_break_stmt(o)
+        if self.loops:
+            self.loops[-1].has_break = True
         self.tracker.skip_branch()
 
     def visit_expression_stmt(self, o: ExpressionStmt) -> None:
@@ -377,14 +435,28 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
     def visit_while_stmt(self, o: WhileStmt) -> None:
         o.expr.accept(self)
         self.tracker.start_branch_statement()
-        self.loop_depth += 1
+        loop = Loop()
+        self.loops.append(loop)
         o.body.accept(self)
-        self.loop_depth -= 1
+        has_break = loop.has_break
         if not checker.is_true_literal(o.expr):
+            # If this is a loop like `while True`, we can consider the body to be
+            # a single branch statement (we're guaranteed that the body is executed at least once).
+            # If not, call next_branch() to make all variables defined there conditional.
             self.tracker.next_branch()
+        self.tracker.end_branch_statement()
+        if o.else_body is not None:
+            # If the loop has a `break` inside, `else` is executed conditionally.
+            # If the loop doesn't have a `break` either the function will return or
+            # execute the `else`.
+            if has_break:
+                self.tracker.start_branch_statement()
+                self.tracker.next_branch()
             if o.else_body:
                 o.else_body.accept(self)
-        self.tracker.end_branch_statement()
+            if has_break:
+                self.tracker.end_branch_statement()
+        self.loops.pop()
 
     def visit_as_pattern(self, o: AsPattern) -> None:
         if o.name is not None:
@@ -401,16 +473,15 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
             return
         if self.tracker.is_partially_defined(o.name):
             # A variable is only defined in some branches.
-            if self.msg.errors.is_error_code_enabled(errorcodes.PARTIALLY_DEFINED):
-                self.msg.variable_may_be_undefined(o.name, o)
+            self.variable_may_be_undefined(o.name, o)
             # We don't want to report the error on the same variable multiple times.
             self.tracker.record_definition(o.name)
         elif self.tracker.is_defined_in_different_branch(o.name):
             # A variable is defined in one branch but used in a different branch.
-            if self.loop_depth > 0:
-                self.msg.variable_may_be_undefined(o.name, o)
+            if self.loops:
+                self.variable_may_be_undefined(o.name, o)
             else:
-                self.msg.var_used_before_def(o.name, o)
+                self.var_used_before_def(o.name, o)
         elif self.tracker.is_undefined(o.name):
             # A variable is undefined. It could be due to two things:
             # 1. A variable is just totally undefined
@@ -426,6 +497,12 @@ class PartiallyDefinedVariableVisitor(ExtendedTraverserVisitor):
             expr.accept(self)
             self.process_lvalue(idx)
         o.body.accept(self)
+
+    def visit_class_def(self, o: ClassDef) -> None:
+        self.process_definition(o.name)
+        self.tracker.enter_scope()
+        super().visit_class_def(o)
+        self.tracker.exit_scope()
 
     def visit_import(self, o: Import) -> None:
         for mod, alias in o.ids:
