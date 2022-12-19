@@ -84,6 +84,7 @@ more examples and information.
 In particular, see:
 - [type hints cheat sheet](https://mypy.readthedocs.io/en/stable/cheat_sheet_py3.html)
 - [getting started](https://mypy.readthedocs.io/en/stable/getting_started.html)
+- [list of error codes](https://mypy.readthedocs.io/en/stable/error_code_list.html)
 
 Quick start
 -----------
@@ -109,9 +110,13 @@ programs, even if mypy reports type errors:
     python3 PROGRAM
 
 You can also try mypy in an [online playground](https://mypy-play.net/) (developed by
-Yusuke Miyazaki).
+Yusuke Miyazaki). If you are working with large code bases, you can run mypy in
+[daemon mode], that will give much faster (often sub-second) incremental updates:
+
+    dmypy run -- PROGRAM
 
 [statically typed parts]: https://mypy.readthedocs.io/en/latest/getting_started.html#function-signatures-and-dynamic-vs-static-typing
+[daemon-mode]: https://mypy.readthedocs.io/en/stable/mypy_daemon.html
 
 
 Integrations
@@ -160,14 +165,7 @@ To get started with developing mypy, see [CONTRIBUTING.md](CONTRIBUTING.md).
 If you need help getting started, don't hesitate to ask on [gitter](https://gitter.im/python/typing).
 
 
-Development status
-------------------
-
-Mypy is beta software, but it has already been used in production
-for several years at Dropbox and in many other organizations, and
-it has an extensive test suite.
-
-mypyc and compiled version of mypy
+Mypyc and compiled version of mypy
 ----------------------------------
 
 [Mypyc](https://github.com/mypyc/mypyc) uses Python type hints to compile Python
