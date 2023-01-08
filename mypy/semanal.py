@@ -50,7 +50,7 @@ Some important properties:
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from typing import Any, Callable, Collection, Iterable, Iterator, List, TypeVar, cast
 from typing_extensions import Final, TypeAlias as _TypeAlias
 
@@ -947,7 +947,10 @@ class SemanticAnalyzer(
             if func.name in ["__init_subclass__", "__class_getitem__"]:
                 func.is_class = True
             if not func.arguments:
-                self.fail("Method must have at least one argument", func)
+                self.fail(
+                    'Method must have at least one argument. Did you forget the "self" argument?',
+                    func,
+                )
             elif isinstance(functype, CallableType):
                 self_type = get_proper_type(functype.arg_types[0])
                 if isinstance(self_type, AnyType):
@@ -1881,7 +1884,7 @@ class SemanticAnalyzer(
                 # It's bound by our type variable scope
                 return None
             return unbound.name, sym.node
-        if sym and sym.fullname == "typing_extensions.Unpack":
+        if sym and sym.fullname in ("typing.Unpack", "typing_extensions.Unpack"):
             inner_t = unbound.args[0]
             if not isinstance(inner_t, UnboundType):
                 return None
@@ -1915,7 +1918,7 @@ class SemanticAnalyzer(
                 except TypeTranslationError:
                     # This error will be caught later.
                     continue
-                base_tvars = base.accept(TypeVarLikeQuery(self.lookup_qualified, self.tvar_scope))
+                base_tvars = base.accept(TypeVarLikeQuery(self, self.tvar_scope))
                 tvars.extend(base_tvars)
         return remove_dups(tvars)
 
@@ -1933,7 +1936,7 @@ class SemanticAnalyzer(
             except TypeTranslationError:
                 # This error will be caught later.
                 continue
-            base_tvars = base.accept(TypeVarLikeQuery(self.lookup_qualified, self.tvar_scope))
+            base_tvars = base.accept(TypeVarLikeQuery(self, self.tvar_scope))
             tvars.extend(base_tvars)
         tvars = remove_dups(tvars)  # Variables are defined in order of textual appearance.
         tvar_defs = []
@@ -2531,7 +2534,7 @@ class SemanticAnalyzer(
                 )
             else:
                 alternatives = set(module.names.keys()).difference({source_id})
-                matches = best_matches(source_id, alternatives)[:3]
+                matches = best_matches(source_id, alternatives, n=3)
                 if matches:
                     suggestion = f"; maybe {pretty_seq(matches, 'or')}?"
                     message += f"{suggestion}"
@@ -2645,11 +2648,15 @@ class SemanticAnalyzer(
         # But we can't use a full visit because it may emit extra incomplete refs (namely
         # when analysing any type applications there) thus preventing the further analysis.
         # To break the tie, we first analyse rvalue partially, if it can be a type alias.
-        with self.basic_type_applications_set(s):
-            with self.allow_unbound_tvars_set() if self.can_possibly_be_index_alias(
-                s
-            ) else nullcontext():
+        if self.can_possibly_be_index_alias(s):
+            old_basic_type_applications = self.basic_type_applications
+            self.basic_type_applications = True
+            with self.allow_unbound_tvars_set():
                 s.rvalue.accept(self)
+            self.basic_type_applications = old_basic_type_applications
+        else:
+            s.rvalue.accept(self)
+
         if self.found_incomplete_ref(tag) or self.should_wait_rhs(s.rvalue):
             # Initializer couldn't be fully analyzed. Defer the current node and give up.
             # Make sure that if we skip the definition of some local names, they can't be
@@ -2818,17 +2825,6 @@ class SemanticAnalyzer(
             return False
         # Something that looks like Foo = Bar[Baz, ...]
         return True
-
-    @contextmanager
-    def basic_type_applications_set(self, s: AssignmentStmt) -> Iterator[None]:
-        old = self.basic_type_applications
-        # As an optimization, only use the double visit logic if this
-        # can possibly be a recursive type alias.
-        self.basic_type_applications = self.can_possibly_be_index_alias(s)
-        try:
-            yield
-        finally:
-            self.basic_type_applications = old
 
     def is_type_ref(self, rv: Expression, bare: bool = False) -> bool:
         """Does this expression refer to a type?
@@ -3301,7 +3297,7 @@ class SemanticAnalyzer(
             )
             return None, [], set(), []
 
-        found_type_vars = typ.accept(TypeVarLikeQuery(self.lookup_qualified, self.tvar_scope))
+        found_type_vars = typ.accept(TypeVarLikeQuery(self, self.tvar_scope))
         tvar_defs: list[TypeVarLikeType] = []
         namespace = self.qualified_name(name)
         with self.tvar_scope_frame(self.tvar_scope.class_frame(namespace)):
