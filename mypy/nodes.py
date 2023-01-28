@@ -480,7 +480,13 @@ class ImportAll(ImportBase):
         return visitor.visit_import_all(self)
 
 
-FUNCBASE_FLAGS: Final = ["is_property", "is_class", "is_static", "is_final"]
+FUNCBASE_FLAGS: Final = [
+    "is_property",
+    "is_class",
+    "is_static",
+    "is_final",
+    "is_dataclass_transform",
+]
 
 
 class FuncBase(Node):
@@ -506,6 +512,7 @@ class FuncBase(Node):
         "is_static",  # Uses "@staticmethod"
         "is_final",  # Uses "@final"
         "_fullname",
+        "is_dataclass_transform",  # Is decorated with "@typing.dataclass_transform" or similar
     )
 
     def __init__(self) -> None:
@@ -524,6 +531,7 @@ class FuncBase(Node):
         self.is_final = False
         # Name with module prefix
         self._fullname = ""
+        self.is_dataclass_transform = False
 
     @property
     @abstractmethod
@@ -2800,6 +2808,7 @@ class TypeInfo(SymbolNode):
         "inferring",
         "is_enum",
         "fallback_to_any",
+        "meta_fallback_to_any",
         "type_vars",
         "has_param_spec_type",
         "bases",
@@ -2894,6 +2903,10 @@ class TypeInfo(SymbolNode):
     # (and __setattr__), but without the __getattr__ method.
     fallback_to_any: bool
 
+    # Same as above but for cases where metaclass has type Any. This will suppress
+    # all attribute errors only for *class object* access.
+    meta_fallback_to_any: bool
+
     # Information related to type annotations.
 
     # Generic type variable names (full names)
@@ -2963,6 +2976,7 @@ class TypeInfo(SymbolNode):
         "is_abstract",
         "is_enum",
         "fallback_to_any",
+        "meta_fallback_to_any",
         "is_named_tuple",
         "is_newtype",
         "is_protocol",
@@ -3002,6 +3016,7 @@ class TypeInfo(SymbolNode):
         self.is_final = False
         self.is_enum = False
         self.fallback_to_any = False
+        self.meta_fallback_to_any = False
         self._promote = []
         self.alt_promote = None
         self.tuple_type = None

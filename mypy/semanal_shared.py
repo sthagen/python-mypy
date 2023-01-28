@@ -38,6 +38,11 @@ from mypy.types import (
     get_proper_type,
 )
 
+# Subclasses can override these Var attributes with incompatible types. This can also be
+# set for individual attributes using 'allow_incompatible_override' of Var.
+ALLOW_INCOMPATIBLE_OVERRIDE: Final = ("__slots__", "__deletable__", "__match_args__")
+
+
 # Priorities for ordering of patches within the "patch" phase of semantic analysis
 # (after the main pass):
 
@@ -230,6 +235,12 @@ class SemanticAnalyzerInterface(SemanticAnalyzerCoreInterface):
     @property
     @abstractmethod
     def is_typeshed_stub_file(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def process_placeholder(
+        self, name: str | None, kind: str, ctx: Context, force_progress: bool = False
+    ) -> None:
         raise NotImplementedError
 
 
