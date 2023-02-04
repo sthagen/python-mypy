@@ -625,23 +625,23 @@ class SemanticAnalyzer(
                     continue
                 # Need to construct the type ourselves, to avoid issues with __builtins__.list
                 # not being subscriptable or typing.List not getting bound
-                sym = self.lookup_qualified("__builtins__.list", Context())
-                if not sym:
-                    continue
-                node = sym.node
-                if not isinstance(node, TypeInfo):
-                    self.defer(node)
+                inst = self.named_type_or_none("builtins.list", [str_type])
+                if inst is None:
+                    assert not self.final_iteration, "Cannot find builtins.list to add __path__"
+                    self.defer()
                     return
-                typ = Instance(node, [str_type])
+                typ = inst
             elif name == "__annotations__":
-                sym = self.lookup_qualified("__builtins__.dict", Context(), suppress_errors=True)
-                if not sym:
-                    continue
-                node = sym.node
-                if not isinstance(node, TypeInfo):
-                    self.defer(node)
+                inst = self.named_type_or_none(
+                    "builtins.dict", [str_type, AnyType(TypeOfAny.special_form)]
+                )
+                if inst is None:
+                    assert (
+                        not self.final_iteration
+                    ), "Cannot find builtins.dict to add __annotations__"
+                    self.defer()
                     return
-                typ = Instance(node, [str_type, AnyType(TypeOfAny.special_form)])
+                typ = inst
             else:
                 assert t is not None, f"type should be specified for {name}"
                 typ = UnboundType(t)
@@ -864,6 +864,20 @@ class SemanticAnalyzer(
                     return
                 assert isinstance(result, ProperType)
                 if isinstance(result, CallableType):
+                    # type guards need to have a positional argument, to spec
+                    if (
+                        result.type_guard
+                        and ARG_POS not in result.arg_kinds[self.is_class_scope() :]
+                        and not defn.is_static
+                    ):
+                        self.fail(
+                            "TypeGuard functions must have a positional argument",
+                            result,
+                            code=codes.VALID_TYPE,
+                        )
+                        # in this case, we just kind of just ... remove the type guard.
+                        result = result.copy_modified(type_guard=None)
+
                     result = self.remove_unpack_kwargs(defn, result)
                     if has_self_type and self.type is not None:
                         info = self.type
@@ -972,7 +986,7 @@ class SemanticAnalyzer(
                             # This error is off by default, since it is explicitly allowed
                             # by the PEP 673.
                             self.fail(
-                                "Redundant Self annotation on method first argument",
+                                'Redundant "Self" annotation for the first method argument',
                                 func,
                                 code=codes.REDUNDANT_SELF_TYPE,
                             )
@@ -2583,6 +2597,16 @@ class SemanticAnalyzer(
             ):
                 # Yes. Generate a helpful note.
                 self.msg.add_fixture_note(fullname, context)
+            else:
+                typing_extensions = self.modules.get("typing_extensions")
+                if typing_extensions and source_id in typing_extensions.names:
+                    self.msg.note(
+                        f"Use `from typing_extensions import {source_id}` instead", context
+                    )
+                    self.msg.note(
+                        "See https://mypy.readthedocs.io/en/stable/runtime_troubles.html#using-new-additions-to-the-typing-module",
+                        context,
+                    )
 
     def process_import_over_existing_name(
         self,
@@ -2658,7 +2682,32 @@ class SemanticAnalyzer(
 
     def visit_assignment_expr(self, s: AssignmentExpr) -> None:
         s.value.accept(self)
+        if self.is_func_scope():
+            if not self.check_valid_comprehension(s):
+                return
         self.analyze_lvalue(s.target, escape_comprehensions=True, has_explicit_value=True)
+
+    def check_valid_comprehension(self, s: AssignmentExpr) -> bool:
+        """Check that assignment expression is not nested within comprehension at class scope.
+
+        class C:
+            [(j := i) for i in [1, 2, 3]]
+        is a syntax error that is not enforced by Python parser, but at later steps.
+        """
+        for i, is_comprehension in enumerate(reversed(self.is_comprehension_stack)):
+            if not is_comprehension and i < len(self.locals) - 1:
+                if self.locals[-1 - i] is None:
+                    self.fail(
+                        "Assignment expression within a comprehension"
+                        " cannot be used in a class body",
+                        s,
+                        code=codes.SYNTAX,
+                        serious=True,
+                        blocker=True,
+                    )
+                    return False
+                break
+        return True
 
     def visit_assignment_stmt(self, s: AssignmentStmt) -> None:
         self.statement = s
@@ -3334,7 +3383,7 @@ class SemanticAnalyzer(
                 tvar_def = self.tvar_scope.bind_new(name, tvar_expr)
                 tvar_defs.append(tvar_def)
 
-            res = analyze_type_alias(
+            analyzed, depends_on = analyze_type_alias(
                 typ,
                 self,
                 self.tvar_scope,
@@ -3346,13 +3395,8 @@ class SemanticAnalyzer(
                 global_scope=global_scope,
                 allowed_alias_tvars=tvar_defs,
             )
-        analyzed: Type | None = None
-        if res:
-            analyzed, depends_on = res
-            qualified_tvars = [node.fullname for (name, node) in found_type_vars]
-        else:
-            depends_on = set()
-            qualified_tvars = []
+
+        qualified_tvars = [node.fullname for _name, node in found_type_vars]
         return analyzed, tvar_defs, depends_on, qualified_tvars
 
     def is_pep_613(self, s: AssignmentStmt) -> bool:
@@ -6612,5 +6656,16 @@ def is_trivial_body(block: Block) -> bool:
 def is_dataclass_transform_decorator(node: Node | None) -> bool:
     if isinstance(node, RefExpr):
         return is_dataclass_transform_decorator(node.node)
+    if isinstance(node, CallExpr):
+        # Like dataclasses.dataclass, transform-based decorators can be applied either with or
+        # without parameters; ie, both of these forms are accepted:
+        #
+        # @typing.dataclass_transform
+        # class Foo: ...
+        # @typing.dataclass_transform(eq=True, order=True, ...)
+        # class Bar: ...
+        #
+        # We need to unwrap the call for the second variant.
+        return is_dataclass_transform_decorator(node.callee)
 
     return isinstance(node, Decorator) and node.func.is_dataclass_transform
