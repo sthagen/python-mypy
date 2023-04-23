@@ -917,13 +917,9 @@ class SubtypeVisitor(TypeVisitor[bool]):
 
             for item in _flattened(self.right.relevant_items()):
                 p_item = get_proper_type(item)
-                if isinstance(p_item, LiteralType):
-                    fast_check.add(p_item)
-                elif isinstance(p_item, Instance):
-                    if p_item.last_known_value is None:
-                        fast_check.add(p_item)
-                    else:
-                        fast_check.add(p_item.last_known_value)
+                fast_check.add(p_item)
+                if isinstance(p_item, Instance) and p_item.last_known_value is not None:
+                    fast_check.add(p_item.last_known_value)
 
             for item in left.relevant_items():
                 p_item = get_proper_type(item)
@@ -1034,7 +1030,7 @@ def is_protocol_implementation(
         if not members_right.issubset(members_left):
             return False
     assuming = right.type.assuming_proper if proper_subtype else right.type.assuming
-    for (l, r) in reversed(assuming):
+    for l, r in reversed(assuming):
         if l == left and r == right:
             return True
     with pop_on_exit(assuming, left, right):
