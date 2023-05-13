@@ -102,8 +102,8 @@ from mypy.subtypes import is_equivalent, is_same_type, is_subtype, non_method_pr
 from mypy.traverser import has_await_expression
 from mypy.typeanal import (
     check_for_explicit_any,
-    expand_type_alias,
     has_any_from_unimported_type,
+    instantiate_type_alias,
     make_optional_type,
     set_any_tvars,
 )
@@ -155,12 +155,9 @@ from mypy.types import (
     get_proper_type,
     get_proper_types,
     has_recursive_types,
-    is_generic_instance,
     is_named_instance,
-    is_optional,
-    is_self_type_like,
-    remove_optional,
 )
+from mypy.types_utils import is_generic_instance, is_optional, is_self_type_like, remove_optional
 from mypy.typestate import type_state
 from mypy.typevars import fill_typevars
 from mypy.typevartuples import find_unpack_in_list
@@ -2057,7 +2054,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 if (
                     isinstance(first_actual_arg_type, TupleType)
                     and len(first_actual_arg_type.items) == 1
-                    and isinstance(get_proper_type(first_actual_arg_type.items[0]), UnpackType)
+                    and isinstance(first_actual_arg_type.items[0], UnpackType)
                 ):
                     # TODO: use walrus operator
                     actual_types = [first_actual_arg_type.items[0]] + [
@@ -2084,7 +2081,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                             callee_arg_types = unpacked_type.items
                             callee_arg_kinds = [ARG_POS] * len(actuals)
                         else:
-                            inner_unpack = get_proper_type(unpacked_type.items[inner_unpack_index])
+                            inner_unpack = unpacked_type.items[inner_unpack_index]
                             assert isinstance(inner_unpack, UnpackType)
                             inner_unpacked_type = get_proper_type(inner_unpack.type)
                             # We assume heterogenous tuples are desugared earlier
@@ -3965,12 +3962,12 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
         There are two different options here, depending on whether expr refers
         to a type alias or directly to a generic class. In the first case we need
-        to use a dedicated function typeanal.expand_type_alias(). This
-        is due to some differences in how type arguments are applied and checked.
+        to use a dedicated function typeanal.instantiate_type_alias(). This
+        is due to slight differences in how type arguments are applied and checked.
         """
         if isinstance(tapp.expr, RefExpr) and isinstance(tapp.expr.node, TypeAlias):
             # Subscription of a (generic) alias in runtime context, expand the alias.
-            item = expand_type_alias(
+            item = instantiate_type_alias(
                 tapp.expr.node,
                 tapp.types,
                 self.chk.fail,
