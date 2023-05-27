@@ -270,6 +270,7 @@ from mypy.types import (
     TypeOfAny,
     TypeType,
     TypeVarLikeType,
+    TypeVarTupleType,
     TypeVarType,
     UnboundType,
     UnpackType,
@@ -1074,7 +1075,9 @@ class SemanticAnalyzer(
                 )
             else:
                 return
-        info.self_type = TypeVarType("Self", f"{info.fullname}.Self", 0, [], fill_typevars(info))
+        info.self_type = TypeVarType(
+            "Self", f"{info.fullname}.Self", id=0, values=[], upper_bound=fill_typevars(info)
+        )
 
     def visit_overloaded_func_def(self, defn: OverloadedFuncDef) -> None:
         self.statement = defn
@@ -3424,8 +3427,18 @@ class SemanticAnalyzer(
                 allowed_alias_tvars=tvar_defs,
             )
 
+        # There can be only one variadic variable at most, the error is reported elsewhere.
+        new_tvar_defs = []
+        variadic = False
+        for td in tvar_defs:
+            if isinstance(td, TypeVarTupleType):
+                if variadic:
+                    continue
+                variadic = True
+            new_tvar_defs.append(td)
+
         qualified_tvars = [node.fullname for _name, node in found_type_vars]
-        return analyzed, tvar_defs, depends_on, qualified_tvars
+        return analyzed, new_tvar_defs, depends_on, qualified_tvars
 
     def is_pep_613(self, s: AssignmentStmt) -> bool:
         if s.unanalyzed_type is not None and isinstance(s.unanalyzed_type, UnboundType):
@@ -4898,7 +4911,7 @@ class SemanticAnalyzer(
                 and isinstance(expr.callee.expr, NameExpr)
                 and expr.callee.expr.name == "__all__"
                 and expr.callee.expr.kind == GDEF
-                and expr.callee.name in ("append", "extend")
+                and expr.callee.name in ("append", "extend", "remove")
             ):
                 if expr.callee.name == "append" and expr.args:
                     self.add_exports(expr.args[0])
@@ -4908,6 +4921,12 @@ class SemanticAnalyzer(
                     and isinstance(expr.args[0], (ListExpr, TupleExpr))
                 ):
                     self.add_exports(expr.args[0].items)
+                elif (
+                    expr.callee.name == "remove"
+                    and expr.args
+                    and isinstance(expr.args[0], StrExpr)
+                ):
+                    self.all_exports = [n for n in self.all_exports if n != expr.args[0].value]
 
     def translate_dict_call(self, call: CallExpr) -> DictExpr | None:
         """Translate 'dict(x=y, ...)' to {'x': y, ...} and 'dict()' to {}.
