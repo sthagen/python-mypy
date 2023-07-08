@@ -9,6 +9,7 @@ from typing import (
     AbstractSet,
     Callable,
     Dict,
+    Final,
     Generic,
     Iterable,
     Iterator,
@@ -22,7 +23,7 @@ from typing import (
     cast,
     overload,
 )
-from typing_extensions import Final, TypeAlias as _TypeAlias
+from typing_extensions import TypeAlias as _TypeAlias
 
 import mypy.checkexpr
 from mypy import errorcodes as codes, message_registry, nodes, operators
@@ -1163,11 +1164,10 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                         isinstance(defn, FuncDef)
                         and ref_type is not None
                         and i == 0
-                        and not defn.is_static
+                        and (not defn.is_static or defn.name == "__new__")
                         and typ.arg_kinds[0] not in [nodes.ARG_STAR, nodes.ARG_STAR2]
                     ):
-                        isclass = defn.is_class or defn.name in ("__new__", "__init_subclass__")
-                        if isclass:
+                        if defn.is_class or defn.name == "__new__":
                             ref_type = mypy.types.TypeType.make_normalized(ref_type)
                         erased = get_proper_type(erase_to_bound(arg_type))
                         if not is_subtype(ref_type, erased, ignore_type_params=True):
@@ -1546,7 +1546,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 if opt_meta is not None:
                     forward_inst = opt_meta
 
-        def has_readable_member(typ: Union[UnionType, Instance], name: str) -> bool:
+        def has_readable_member(typ: UnionType | Instance, name: str) -> bool:
             # TODO: Deal with attributes of TupleType etc.
             if isinstance(typ, Instance):
                 return typ.type.has_readable_member(name)
