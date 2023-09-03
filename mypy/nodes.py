@@ -573,7 +573,6 @@ class OverloadedFuncDef(FuncBase, SymbolNode, Statement):
         if items:
             # TODO: figure out how to reliably set end position (we don't know the impl here).
             self.set_line(items[0].line, items[0].column)
-        self.is_final = False
 
     @property
     def name(self) -> str:
@@ -751,6 +750,7 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         "is_mypy_only",
         # Present only when a function is decorated with @typing.datasclass_transform or similar
         "dataclass_transform_spec",
+        "docstring",
     )
 
     __match_args__ = ("name", "arguments", "type", "body")
@@ -771,7 +771,6 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         # Is this an abstract method with trivial body?
         # Such methods can't be called via super().
         self.is_trivial_body = False
-        self.is_final = False
         # Original conditional definition
         self.original_def: None | FuncDef | Var | Decorator = None
         # Used for error reporting (to keep backward compatibility with pre-3.8)
@@ -779,6 +778,7 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         # Definitions that appear in if TYPE_CHECKING are marked with this flag.
         self.is_mypy_only = False
         self.dataclass_transform_spec: DataclassTransformSpec | None = None
+        self.docstring: str | None = None
 
     @property
     def name(self) -> str:
@@ -1081,6 +1081,7 @@ class ClassDef(Statement):
         "analyzed",
         "has_incompatible_baseclass",
         "deco_line",
+        "docstring",
         "removed_statements",
     )
 
@@ -1127,6 +1128,7 @@ class ClassDef(Statement):
         self.has_incompatible_baseclass = False
         # Used for error reporting (to keep backwad compatibility with pre-3.8)
         self.deco_line: int | None = None
+        self.docstring: str | None = None
         self.removed_statements = []
 
     @property
@@ -2621,27 +2623,14 @@ class TypeVarTupleExpr(TypeVarLikeExpr):
 class TypeAliasExpr(Expression):
     """Type alias expression (rvalue)."""
 
-    __slots__ = ("type", "tvars", "no_args", "node")
+    __slots__ = ("node",)
 
-    __match_args__ = ("type", "tvars", "no_args", "node")
+    __match_args__ = ("node",)
 
-    # The target type.
-    type: mypy.types.Type
-    # Names of type variables used to define the alias
-    tvars: list[str]
-    # Whether this alias was defined in bare form. Used to distinguish
-    # between
-    #     A = List
-    # and
-    #     A = List[Any]
-    no_args: bool
     node: TypeAlias
 
     def __init__(self, node: TypeAlias) -> None:
         super().__init__()
-        self.type = node.target
-        self.tvars = [v.name for v in node.alias_tvars]
-        self.no_args = node.no_args
         self.node = node
 
     def accept(self, visitor: ExpressionVisitor[T]) -> T:
@@ -3555,7 +3544,12 @@ class TypeAlias(SymbolNode):
         assert info.tuple_type
         # TODO: is it possible to refactor this to set the correct type vars here?
         return TypeAlias(
-            info.tuple_type.copy_modified(fallback=mypy.types.Instance(info, info.defn.type_vars)),
+            info.tuple_type.copy_modified(
+                # Create an Instance similar to fill_typevars().
+                fallback=mypy.types.Instance(
+                    info, mypy.types.type_vars_as_args(info.defn.type_vars)
+                )
+            ),
             info.fullname,
             info.line,
             info.column,
@@ -3572,7 +3566,10 @@ class TypeAlias(SymbolNode):
         # TODO: is it possible to refactor this to set the correct type vars here?
         return TypeAlias(
             info.typeddict_type.copy_modified(
-                fallback=mypy.types.Instance(info, info.defn.type_vars)
+                # Create an Instance similar to fill_typevars().
+                fallback=mypy.types.Instance(
+                    info, mypy.types.type_vars_as_args(info.defn.type_vars)
+                )
             ),
             info.fullname,
             info.line,

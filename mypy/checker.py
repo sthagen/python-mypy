@@ -41,7 +41,6 @@ from mypy.erasetype import erase_type, erase_typevars, remove_instance_last_know
 from mypy.errorcodes import TYPE_VAR, UNUSED_AWAITABLE, UNUSED_COROUTINE, ErrorCode
 from mypy.errors import Errors, ErrorWatcher, report_internal_error
 from mypy.expandtype import expand_self_type, expand_type, expand_type_by_instance
-from mypy.join import join_types
 from mypy.literals import Key, extract_var_from_literal_hash, literal, literal_hash
 from mypy.maptype import map_instance_to_supertype
 from mypy.meet import is_overlapping_erased_types, is_overlapping_types
@@ -636,13 +635,30 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             self.visit_decorator(defn.items[0])
         for fdef in defn.items:
             assert isinstance(fdef, Decorator)
-            self.check_func_item(fdef.func, name=fdef.func.name, allow_empty=True)
+            if defn.is_property:
+                self.check_func_item(fdef.func, name=fdef.func.name, allow_empty=True)
+            else:
+                # Perform full check for real overloads to infer type of all decorated
+                # overload variants.
+                self.visit_decorator_inner(fdef, allow_empty=True)
             if fdef.func.abstract_status in (IS_ABSTRACT, IMPLICITLY_ABSTRACT):
                 num_abstract += 1
         if num_abstract not in (0, len(defn.items)):
             self.fail(message_registry.INCONSISTENT_ABSTRACT_OVERLOAD, defn)
         if defn.impl:
             defn.impl.accept(self)
+        if not defn.is_property:
+            self.check_overlapping_overloads(defn)
+            if defn.type is None:
+                item_types = []
+                for item in defn.items:
+                    assert isinstance(item, Decorator)
+                    item_type = self.extract_callable_type(item.var.type, item)
+                    if item_type is not None:
+                        item_types.append(item_type)
+                if item_types:
+                    defn.type = Overloaded(item_types)
+        # Check override validity after we analyzed current definition.
         if defn.info:
             found_method_base_classes = self.check_method_override(defn)
             if (
@@ -653,9 +669,34 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 self.msg.no_overridable_method(defn.name, defn)
             self.check_explicit_override_decorator(defn, found_method_base_classes, defn.impl)
             self.check_inplace_operator_method(defn)
-        if not defn.is_property:
-            self.check_overlapping_overloads(defn)
         return None
+
+    def extract_callable_type(self, inner_type: Type | None, ctx: Context) -> CallableType | None:
+        """Get type as seen by an overload item caller."""
+        inner_type = get_proper_type(inner_type)
+        outer_type: CallableType | None = None
+        if inner_type is not None and not isinstance(inner_type, AnyType):
+            if isinstance(inner_type, CallableType):
+                outer_type = inner_type
+            elif isinstance(inner_type, Instance):
+                inner_call = get_proper_type(
+                    analyze_member_access(
+                        name="__call__",
+                        typ=inner_type,
+                        context=ctx,
+                        is_lvalue=False,
+                        is_super=False,
+                        is_operator=True,
+                        msg=self.msg,
+                        original_type=inner_type,
+                        chk=self,
+                    )
+                )
+                if isinstance(inner_call, CallableType):
+                    outer_type = inner_call
+            if outer_type is None:
+                self.msg.not_callable(inner_type, ctx)
+        return outer_type
 
     def check_overlapping_overloads(self, defn: OverloadedFuncDef) -> None:
         # At this point we should have set the impl already, and all remaining
@@ -680,40 +721,20 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
             # This can happen if we've got an overload with a different
             # decorator or if the implementation is untyped -- we gave up on the types.
-            inner_type = get_proper_type(inner_type)
-            if inner_type is not None and not isinstance(inner_type, AnyType):
-                if isinstance(inner_type, CallableType):
-                    impl_type = inner_type
-                elif isinstance(inner_type, Instance):
-                    inner_call = get_proper_type(
-                        analyze_member_access(
-                            name="__call__",
-                            typ=inner_type,
-                            context=defn.impl,
-                            is_lvalue=False,
-                            is_super=False,
-                            is_operator=True,
-                            msg=self.msg,
-                            original_type=inner_type,
-                            chk=self,
-                        )
-                    )
-                    if isinstance(inner_call, CallableType):
-                        impl_type = inner_call
-                if impl_type is None:
-                    self.msg.not_callable(inner_type, defn.impl)
+            impl_type = self.extract_callable_type(inner_type, defn.impl)
 
         is_descriptor_get = defn.info and defn.name == "__get__"
         for i, item in enumerate(defn.items):
-            # TODO overloads involving decorators
             assert isinstance(item, Decorator)
-            sig1 = self.function_type(item.func)
-            assert isinstance(sig1, CallableType)
+            sig1 = self.extract_callable_type(item.var.type, item)
+            if sig1 is None:
+                continue
 
             for j, item2 in enumerate(defn.items[i + 1 :]):
                 assert isinstance(item2, Decorator)
-                sig2 = self.function_type(item2.func)
-                assert isinstance(sig2, CallableType)
+                sig2 = self.extract_callable_type(item2.var.type, item2)
+                if sig2 is None:
+                    continue
 
                 if not are_argument_counts_overlapping(sig1, sig2):
                     continue
@@ -3912,7 +3933,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
         Examples:
 
           * t is 'int' --> True
-          * t is 'list[<nothing>]' --> True
+          * t is 'list[Never]' --> True
           * t is 'dict[...]' --> False (only generic types with a single type
             argument supported)
         """
@@ -3958,7 +3979,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
           x = []  # type: ignore
           x.append(1)   # Should be ok!
 
-        We implement this here by giving x a valid type (replacing inferred <nothing> with Any).
+        We implement this here by giving x a valid type (replacing inferred Never with Any).
         """
         fallback = self.inference_error_fallback_type(type)
         self.set_inferred_type(var, lvalue, fallback)
@@ -4280,12 +4301,14 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 return_type = self.return_types[-1]
             return_type = get_proper_type(return_type)
 
+            is_lambda = isinstance(self.scope.top_function(), LambdaExpr)
             if isinstance(return_type, UninhabitedType):
-                self.fail(message_registry.NO_RETURN_EXPECTED, s)
-                return
+                # Avoid extra error messages for failed inference in lambdas
+                if not is_lambda or not return_type.ambiguous:
+                    self.fail(message_registry.NO_RETURN_EXPECTED, s)
+                    return
 
             if s.expr:
-                is_lambda = isinstance(self.scope.top_function(), LambdaExpr)
                 declared_none_return = isinstance(return_type, NoneType)
                 declared_any_return = isinstance(return_type, AnyType)
 
@@ -4629,45 +4652,32 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
     def analyze_iterable_item_type(self, expr: Expression) -> tuple[Type, Type]:
         """Analyse iterable expression and return iterator and iterator item types."""
-        echk = self.expr_checker
-        iterable = get_proper_type(echk.accept(expr))
-        iterator = echk.check_method_call_by_name("__iter__", iterable, [], [], expr)[0]
-
+        iterator, iterable = self.analyze_iterable_item_type_without_expression(
+            self.expr_checker.accept(expr), context=expr
+        )
         int_type = self.analyze_range_native_int_type(expr)
         if int_type:
             return iterator, int_type
-
-        if (
-            isinstance(iterable, TupleType)
-            and iterable.partial_fallback.type.fullname == "builtins.tuple"
-        ):
-            joined: Type = UninhabitedType()
-            for item in iterable.items:
-                joined = join_types(joined, item)
-            return iterator, joined
-        else:
-            # Non-tuple iterable.
-            return iterator, echk.check_method_call_by_name("__next__", iterator, [], [], expr)[0]
+        return iterator, iterable
 
     def analyze_iterable_item_type_without_expression(
         self, type: Type, context: Context
     ) -> tuple[Type, Type]:
         """Analyse iterable type and return iterator and iterator item types."""
         echk = self.expr_checker
+        iterable: Type
         iterable = get_proper_type(type)
         iterator = echk.check_method_call_by_name("__iter__", iterable, [], [], context)[0]
 
-        if isinstance(iterable, TupleType):
-            joined: Type = UninhabitedType()
-            for item in iterable.items:
-                joined = join_types(joined, item)
-            return iterator, joined
+        if (
+            isinstance(iterable, TupleType)
+            and iterable.partial_fallback.type.fullname == "builtins.tuple"
+        ):
+            return iterator, tuple_fallback(iterable).args[0]
         else:
             # Non-tuple iterable.
-            return (
-                iterator,
-                echk.check_method_call_by_name("__next__", iterator, [], [], context)[0],
-            )
+            iterable = echk.check_method_call_by_name("__next__", iterator, [], [], context)[0]
+            return iterator, iterable
 
     def analyze_range_native_int_type(self, expr: Expression) -> Type | None:
         """Try to infer native int item type from arguments to range(...).
@@ -4749,17 +4759,20 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     e.var.type = AnyType(TypeOfAny.special_form)
                     e.var.is_ready = True
                     return
+        self.visit_decorator_inner(e)
 
+    def visit_decorator_inner(self, e: Decorator, allow_empty: bool = False) -> None:
         if self.recurse_into_functions:
             with self.tscope.function_scope(e.func):
-                self.check_func_item(e.func, name=e.func.name)
+                self.check_func_item(e.func, name=e.func.name, allow_empty=allow_empty)
 
         # Process decorators from the inside out to determine decorated signature, which
         # may be different from the declared signature.
         sig: Type = self.function_type(e.func)
         for d in reversed(e.decorators):
             if refers_to_fullname(d, OVERLOAD_NAMES):
-                self.fail(message_registry.MULTIPLE_OVERLOADS_REQUIRED, e)
+                if not allow_empty:
+                    self.fail(message_registry.MULTIPLE_OVERLOADS_REQUIRED, e)
                 continue
             dec = self.expr_checker.accept(d)
             temp = self.temp_node(sig, context=e)
@@ -4786,6 +4799,8 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                     self.msg.fail("Too many arguments for property", e)
             self.check_incompatible_property_override(e)
         # For overloaded functions we already checked override for overload as a whole.
+        if allow_empty:
+            return
         if e.func.info and not e.func.is_dynamic() and not e.is_overload:
             found_method_base_classes = self.check_method_override(e)
             if (
@@ -4944,7 +4959,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                         self.push_type_map(pattern_map)
                         self.push_type_map(pattern_type.captures)
                     if g is not None:
-                        with self.binder.frame_context(can_skip=True, fall_through=3):
+                        with self.binder.frame_context(can_skip=False, fall_through=3):
                             gt = get_proper_type(self.expr_checker.accept(g))
 
                             if isinstance(gt, DeletedType):
@@ -4952,6 +4967,21 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
                             guard_map, guard_else_map = self.find_isinstance_check(g)
                             else_map = or_conditional_maps(else_map, guard_else_map)
+
+                            # If the guard narrowed the subject, copy the narrowed types over
+                            if isinstance(p, AsPattern):
+                                case_target = p.pattern or p.name
+                                if isinstance(case_target, NameExpr):
+                                    for type_map in (guard_map, else_map):
+                                        if not type_map:
+                                            continue
+                                        for expr in list(type_map):
+                                            if not (
+                                                isinstance(expr, NameExpr)
+                                                and expr.fullname == case_target.fullname
+                                            ):
+                                                continue
+                                            type_map[s.subject] = type_map[expr]
 
                             self.push_type_map(guard_map)
                             self.accept(b)
@@ -7216,22 +7246,32 @@ def is_unsafe_overlapping_overload_signatures(
     #
     # This discrepancy is unfortunately difficult to get rid of, so we repeat the
     # checks twice in both directions for now.
+    #
+    # Note that we ignore possible overlap between type variables and None. This
+    # is technically unsafe, but unsafety is tiny and this prevents some common
+    # use cases like:
+    #     @overload
+    #     def foo(x: None) -> None: ..
+    #     @overload
+    #     def foo(x: T) -> Foo[T]: ...
     return is_callable_compatible(
         signature,
         other,
-        is_compat=is_overlapping_types_no_promote_no_uninhabited,
+        is_compat=is_overlapping_types_no_promote_no_uninhabited_no_none,
         is_compat_return=lambda l, r: not is_subtype_no_promote(l, r),
         ignore_return=False,
         check_args_covariantly=True,
         allow_partial_overlap=True,
+        no_unify_none=True,
     ) or is_callable_compatible(
         other,
         signature,
-        is_compat=is_overlapping_types_no_promote_no_uninhabited,
+        is_compat=is_overlapping_types_no_promote_no_uninhabited_no_none,
         is_compat_return=lambda l, r: not is_subtype_no_promote(r, l),
         ignore_return=False,
         check_args_covariantly=False,
         allow_partial_overlap=True,
+        no_unify_none=True,
     )
 
 
@@ -7352,7 +7392,7 @@ def is_valid_inferred_type(typ: Type, is_lvalue_final: bool = False) -> bool:
 class InvalidInferredTypes(BoolTypeQuery):
     """Find type components that are not valid for an inferred type.
 
-    These include <Erased> type, and any <nothing> types resulting from failed
+    These include <Erased> type, and any uninhabited types resulting from failed
     (ambiguous) type inference.
     """
 
@@ -7366,9 +7406,14 @@ class InvalidInferredTypes(BoolTypeQuery):
         # This can happen inside a lambda.
         return True
 
+    def visit_type_var(self, t: TypeVarType) -> bool:
+        # This is needed to prevent leaking into partial types during
+        # multi-step type inference.
+        return t.id.is_meta_var()
+
 
 class SetNothingToAny(TypeTranslator):
-    """Replace all ambiguous <nothing> types with Any (to avoid spurious extra errors)."""
+    """Replace all ambiguous Uninhabited types with Any (to avoid spurious extra errors)."""
 
     def visit_uninhabited_type(self, t: UninhabitedType) -> Type:
         if t.ambiguous:
@@ -7376,7 +7421,7 @@ class SetNothingToAny(TypeTranslator):
         return t
 
     def visit_type_alias_type(self, t: TypeAliasType) -> Type:
-        # Target of the alias cannot be an ambiguous <nothing>, so we just
+        # Target of the alias cannot be an ambiguous UninhabitedType, so we just
         # replace the arguments.
         return t.copy_modified(args=[a.accept(self) for a in t.args])
 
@@ -7717,12 +7762,18 @@ def is_subtype_no_promote(left: Type, right: Type) -> bool:
     return is_subtype(left, right, ignore_promotions=True)
 
 
-def is_overlapping_types_no_promote_no_uninhabited(left: Type, right: Type) -> bool:
-    # For the purpose of unsafe overload checks we consider list[<nothing>] and list[int]
+def is_overlapping_types_no_promote_no_uninhabited_no_none(left: Type, right: Type) -> bool:
+    # For the purpose of unsafe overload checks we consider list[Never] and list[int]
     # non-overlapping. This is consistent with how we treat list[int] and list[str] as
     # non-overlapping, despite [] belongs to both. Also this will prevent false positives
     # for failed type inference during unification.
-    return is_overlapping_types(left, right, ignore_promotions=True, ignore_uninhabited=True)
+    return is_overlapping_types(
+        left,
+        right,
+        ignore_promotions=True,
+        ignore_uninhabited=True,
+        prohibit_none_typevar_overlap=True,
+    )
 
 
 def is_private(node_name: str) -> bool:
