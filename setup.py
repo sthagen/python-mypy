@@ -202,7 +202,7 @@ setup(
     author="Jukka Lehtosalo",
     author_email="jukka.lehtosalo@iki.fi",
     url="https://www.mypy-lang.org/",
-    license="MIT License",
+    license="MIT",
     py_modules=[],
     ext_modules=ext_modules,
     packages=find_packages(),
@@ -227,6 +227,7 @@ setup(
     # Same here.
     extras_require={
         "dmypy": "psutil >= 4.0",
+        "mypyc": "setuptools >= 50",
         "python2": "",
         "reports": "lxml",
         "install-types": "pip",
