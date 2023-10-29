@@ -343,7 +343,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # on whether current expression is a callee, to give better error messages
         # related to type context.
         self.is_callee = False
-        type_state.infer_polymorphic = self.chk.options.new_type_inference
+        type_state.infer_polymorphic = not self.chk.options.old_type_inference
 
     def reset(self) -> None:
         self.resolved_type = {}
@@ -410,7 +410,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             result = self.alias_type_in_runtime_context(
                 node, ctx=e, alias_definition=e.is_alias_rvalue or lvalue
             )
-        elif isinstance(node, (TypeVarExpr, ParamSpecExpr)):
+        elif isinstance(node, (TypeVarExpr, ParamSpecExpr, TypeVarTupleExpr)):
             result = self.object_type()
         else:
             if isinstance(node, PlaceholderNode):
@@ -2082,7 +2082,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 elif not first_arg or not is_subtype(self.named_type("builtins.str"), first_arg):
                     self.chk.fail(message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context)
 
-            if self.chk.options.new_type_inference and any(
+            if not self.chk.options.old_type_inference and any(
                 a is None
                 or isinstance(get_proper_type(a), UninhabitedType)
                 or set(get_type_vars(a)) & set(callee_type.variables)
@@ -2181,7 +2181,11 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 lambda a: self.accept(args[a]),
             )
 
-        arg_types = self.infer_arg_types_in_context(callee_type, args, arg_kinds, formal_to_actual)
+        # Same as during first pass, disable type errors (we still have partial context).
+        with self.msg.filter_errors():
+            arg_types = self.infer_arg_types_in_context(
+                callee_type, args, arg_kinds, formal_to_actual
+            )
 
         inferred_args, _ = infer_function_type_arguments(
             callee_type,
@@ -3312,6 +3316,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
 
     def concat_tuples(self, left: TupleType, right: TupleType) -> TupleType:
         """Concatenate two fixed length tuples."""
+        assert not (find_unpack_in_list(left.items) and find_unpack_in_list(right.items))
         return TupleType(
             items=left.items + right.items, fallback=self.named_type("builtins.tuple")
         )
@@ -5230,7 +5235,7 @@ class ExpressionChecker(ExpressionVisitor[Type]):
         # they must be considered as indeterminate. We use ErasedType since it
         # does not affect type inference results (it is for purposes like this
         # only).
-        if self.chk.options.new_type_inference:
+        if not self.chk.options.old_type_inference:
             # With new type inference we can preserve argument types even if they
             # are generic, since new inference algorithm can handle constraints
             # like S <: T (we still erase return type since it's ultimately unknown).
@@ -6503,8 +6508,8 @@ def merge_typevars_in_callables_by_name(
             for tv in target.variables:
                 name = tv.fullname
                 if name not in unique_typevars:
-                    # TODO(PEP612): fix for ParamSpecType
-                    if isinstance(tv, ParamSpecType):
+                    # TODO: support ParamSpecType and TypeVarTuple.
+                    if isinstance(tv, (ParamSpecType, TypeVarTupleType)):
                         continue
                     assert isinstance(tv, TypeVarType)
                     unique_typevars[name] = tv
