@@ -4,13 +4,11 @@
 
 Stubgen will now include `__all__` in its output if it is in the input file (PR [16356](https://github.com/python/mypy/pull/16356)).
 
-## Mypy 1.7 [unreleased]
+## Mypy 1.7
 
 We’ve just uploaded mypy 1.7 to the Python Package Index ([PyPI](https://pypi.org/project/mypy/)). Mypy is a static type checker for Python. This release includes new features, performance improvements and bug fixes. You can install it as follows:
 
-```
     python3 -m pip install -U mypy
-```
 
 You can read the full documentation for this release on [Read the Docs](http://mypy.readthedocs.io).
 
@@ -33,9 +31,16 @@ foo(name="x", age=1)  # Ok
 foo(name=1)  # Error
 ```
 
-Refer to [PEP 692](https://peps.python.org/pep-0692/) for the details.
+The definition of `foo` above is equivalent to the one below, with keyword-only arguments `name` and `age`:
 
-This was contributed by Ivan Levkivskyi back in 2022 ([PR 13471](https://github.com/python/mypy/pull/13471)).
+```
+def foo(*, name: str, age: int) -> None:
+    ...
+```
+
+Refer to [PEP 692](https://peps.python.org/pep-0692/) for more information. Note that unlike in the current version of the PEP, mypy always treats signatures with `Unpack[SomeTypedDict]` as equivalent to their expanded forms with explicit keyword arguments, and there aren't special type checking rules for TypedDict arguments.
+
+This was contributed by Ivan Levkivskyi back in 2022 (PR [13471](https://github.com/python/mypy/pull/13471)).
 
 #### TypeVarTuple Support Enabled (Experimental)
 
@@ -45,6 +50,8 @@ TypeVarTuple was implemented by Jared Hance and Ivan Levkivskyi over several myp
 
 Changes included in this release:
 
+ * Fix handling of tuple type context with unpacks (Ivan Levkivskyi, PR [16444](https://github.com/python/mypy/pull/16444))
+ * Handle TypeVarTuples when checking overload constraints (robjhornby, PR [16428](https://github.com/python/mypy/pull/16428))
  * Enable Unpack/TypeVarTuple support (Ivan Levkivskyi, PR [16354](https://github.com/python/mypy/pull/16354))
  * Fix crash on unpack call special-casing (Ivan Levkivskyi, PR [16381](https://github.com/python/mypy/pull/16381))
  * Some final touches for variadic types support (Ivan Levkivskyi, PR [16334](https://github.com/python/mypy/pull/16334))
@@ -93,6 +100,14 @@ def f(t: tuple[int, int] | tuple[int, int, int]) -> None:
         a, b = t   # Ok
     ...
 ```
+
+This feature was contributed by Ivan Levkivskyi (PR [16237](https://github.com/python/mypy/pull/16237)).
+
+#### More Precise Tuple Lengths (Experimental)
+
+Mypy supports experimental, more precise checking of tuple type lengths through `--enable-incomplete-feature=PreciseTupleTypes`. Refer to the [documentation](https://mypy.readthedocs.io/en/latest/command_line.html#enabling-incomplete-experimental-features) for more information.
+
+More generally, we are planning to use `--enable-incomplete-feature` to introduce experimental features that would benefit from community feedback.
 
 This feature was contributed by Ivan Levkivskyi (PR [16237](https://github.com/python/mypy/pull/16237)).
 
@@ -175,6 +190,7 @@ This was contributed by Shantanu (PR [16280](https://github.com/python/mypy/pull
 
 #### Other Notable Changes and Fixes
 
+ * Propagate narrowed types to lambda expressions (Ivan Levkivskyi, PR [16407](https://github.com/python/mypy/pull/16407))
  * Avoid importing from `setuptools._distutils` (Shantanu, PR [16348](https://github.com/python/mypy/pull/16348))
  * Delete recursive aliases flags (Ivan Levkivskyi, PR [16346](https://github.com/python/mypy/pull/16346))
  * Properly use proper subtyping for callables (Ivan Levkivskyi, PR [16343](https://github.com/python/mypy/pull/16343))
