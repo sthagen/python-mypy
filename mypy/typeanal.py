@@ -1775,8 +1775,7 @@ TypeVarLikeList = List[Tuple[str, TypeVarLikeExpr]]
 
 
 class MsgCallback(Protocol):
-    def __call__(self, __msg: str, __ctx: Context, *, code: ErrorCode | None = None) -> None:
-        ...
+    def __call__(self, __msg: str, __ctx: Context, *, code: ErrorCode | None = None) -> None: ...
 
 
 def get_omitted_any(
@@ -1866,7 +1865,11 @@ def fix_instance(
     max_tv_count = len(t.type.type_vars)
     if arg_count < min_tv_count or arg_count > max_tv_count:
         # Don't use existing args if arg_count doesn't match
+        if arg_count > max_tv_count:
+            # Already wrong arg count error, don't emit missing type parameters error as well.
+            disallow_any = False
         t.args = ()
+        arg_count = 0
 
     args: list[Type] = [*(t.args[:max_tv_count])]
     any_type: AnyType | None = None
@@ -2324,7 +2327,6 @@ def validate_instance(t: Instance, fail: MsgCallback, empty_tuple_index: bool) -
                 t,
                 code=codes.TYPE_ARG,
             )
-            t.args = ()
             t.invalid = True
         return False
     return True
