@@ -914,6 +914,17 @@ class SubtypeVisitor(TypeVisitor[bool]):
                 #       lands so here we are anticipating that change.
                 if (name in left.required_keys) != (name in right.required_keys):
                     return False
+                # Readonly fields check:
+                #
+                # A = TypedDict('A', {'x': ReadOnly[int]})
+                # B = TypedDict('A', {'x': int})
+                # def reset_x(b: B) -> None:
+                #     b['x'] = 0
+                #
+                # So, `A` cannot be a subtype of `B`, while `B` can be a subtype of `A`,
+                # because you can use `B` everywhere you use `A`, but not the other way around.
+                if name in left.readonly_keys and name not in right.readonly_keys:
+                    return False
             # (NOTE: Fallbacks don't matter.)
             return True
         else:
@@ -1930,6 +1941,8 @@ def restrict_subtype_away(t: Type, s: Type) -> Type:
                 if (isinstance(get_proper_type(item), AnyType) or not covers_at_runtime(item, s))
             ]
         return UnionType.make_union(new_items)
+    elif isinstance(p_t, TypeVarType):
+        return p_t.copy_modified(upper_bound=restrict_subtype_away(p_t.upper_bound, s))
     elif covers_at_runtime(t, s):
         return UninhabitedType()
     else:
