@@ -968,14 +968,12 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 message = 'Type variable "{}" is unbound'
                 short = name.split(".")[-1]
                 notes.append(
-                    (
-                        '(Hint: Use "Generic[{}]" or "Protocol[{}]" base class'
-                        ' to bind "{}" inside a class)'
-                    ).format(short, short, short)
+                    f'(Hint: Use "Generic[{short}]" or "Protocol[{short}]" base class'
+                    f' to bind "{short}" inside a class)'
                 )
                 notes.append(
-                    '(Hint: Use "{}" in function signature to bind "{}"'
-                    " inside a function)".format(short, short)
+                    f'(Hint: Use "{short}" in function signature '
+                    f'to bind "{short}" inside a function)'
                 )
         else:
             message = 'Cannot interpret reference "{}" as a type'
@@ -2276,15 +2274,6 @@ def set_any_tvars(
             code=codes.TYPE_ARG,
         )
     return t
-
-
-def flatten_tvars(lists: list[list[T]]) -> list[T]:
-    result: list[T] = []
-    for lst in lists:
-        for item in lst:
-            if item not in result:
-                result.append(item)
-    return result
 
 
 class DivergingAliasDetector(TrivialSyntheticTypeTranslator):
