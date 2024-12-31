@@ -2,7 +2,43 @@
 
 ## Next release
 
-...
+### Drop Support for Python 3.8
+
+Mypy no longer supports running with Python 3.8, which has reached end-of-life.
+When running mypy with Python 3.9+, it is still possible to type check code
+that needs to support Python 3.8 with the `--python-version 3.8` argument.
+Support for this will be dropped in the first half of 2025!
+
+Contributed by Marc Mueller (PR [17492](https://github.com/python/mypy/pull/17492)).
+
+### Mypyc accelerated mypy wheels for aarch64
+
+Mypy can compile itself to C extension modules using mypyc. This makes mypy 3-5x faster
+than if mypy is interpreted with pure Python. We now build and upload mypyc accelerated
+mypy wheels for `manylinux_aarch64` to PyPI, making it easy for users on such platforms
+to realise this speedup.
+
+Contributed by Christian Bundy (PR [mypy_mypyc-wheels#76](https://github.com/mypyc/mypy_mypyc-wheels/pull/76))
+
+### `--strict-bytes`
+
+By default, mypy treats an annotation of ``bytes`` as permitting ``bytearray`` and ``memoryview``.
+[PEP 688](https://peps.python.org/pep-0688) specified the removal of this special case.
+Use this flag to disable this behavior. `--strict-bytes` will be enabled by default in **mypy 2.0**.
+
+Contributed by Ali Hamdan (PR [18137](https://github.com/python/mypy/pull/18263/)) and
+Shantanu Jain (PR [13952](https://github.com/python/mypy/pull/13952)).
+
+### Improvements to partial type handling in loops
+
+This change results in mypy better modelling control flow within loops and hence detecting several
+issues it previously did not detect. In some cases, this change may require use of an additional
+explicit annotation of a variable.
+
+Contributed by Christoph Tyralla (PR [18180](https://github.com/python/mypy/pull/18180)).
+
+(Speaking of partial types, another reminder that mypy plans on enabling `--local-partial-types`
+by default in **mypy 2.0**).
 
 ## Mypy 1.14
 
