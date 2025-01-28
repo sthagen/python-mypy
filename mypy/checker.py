@@ -4469,7 +4469,7 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
             if (
                 isinstance(get_proper_type(lvalue_type), UnionType)
                 # Skip literal types, as they have special logic (for better errors).
-                and not isinstance(get_proper_type(rvalue_type), LiteralType)
+                and not is_literal_type_like(rvalue_type)
                 and not self.simple_rvalue(rvalue)
             ):
                 # Try re-inferring r.h.s. in empty context, and use that if it
@@ -6021,6 +6021,8 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
 
         def combine_maps(list_maps: list[TypeMap]) -> TypeMap:
             """Combine all typemaps in list_maps into one typemap"""
+            if all(m is None for m in list_maps):
+                return None
             result_map = {}
             for d in list_maps:
                 if d is not None:
