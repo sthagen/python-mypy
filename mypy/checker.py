@@ -77,6 +77,7 @@ from mypy.nodes import (
     FuncBase,
     FuncDef,
     FuncItem,
+    GlobalDecl,
     IfStmt,
     Import,
     ImportAll,
@@ -92,6 +93,7 @@ from mypy.nodes import (
     MypyFile,
     NameExpr,
     Node,
+    NonlocalDecl,
     OperatorAssignmentStmt,
     OpExpr,
     OverloadedFuncDef,
@@ -7871,10 +7873,21 @@ class TypeChecker(NodeVisitor[None], CheckerPluginInterface):
                 if isinstance(item, Decorator) and isinstance(
                     candidate := item.func.type, CallableType
                 ):
-                    if selftype is not None:
+                    if selftype is not None and not node.is_static:
                         candidate = bind_self(candidate, selftype)
                     if candidate == target:
                         self.warn_deprecated(item.func, context)
+
+    # leafs
+
+    def visit_pass_stmt(self, o: PassStmt, /) -> None:
+        return None
+
+    def visit_nonlocal_decl(self, o: NonlocalDecl, /) -> None:
+        return None
+
+    def visit_global_decl(self, o: GlobalDecl, /) -> None:
+        return None
 
 
 class CollectArgTypeVarTypes(TypeTraverserVisitor):
