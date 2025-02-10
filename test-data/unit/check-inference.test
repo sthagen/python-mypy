@@ -1239,7 +1239,7 @@ class B: pass
 [out]
 
 [case testForStatementIndexNarrowing]
-from typing_extensions import TypedDict
+from typing import TypedDict
 
 class X(TypedDict):
     hourly: int
@@ -1266,6 +1266,7 @@ for b in ("hourly", "daily"):
     reveal_type(b)  # N: Revealed type is "builtins.str"
     reveal_type(b.upper())  # N: Revealed type is "builtins.str"
 [builtins fixtures/for.pyi]
+[typing fixtures/typing-full.pyi]
 
 
 -- Regression tests
@@ -3894,3 +3895,21 @@ foo = [
 ]
 reveal_type(foo)  # N: Revealed type is "builtins.list[Tuple[builtins.int, typing.Sequence[builtins.str]]]"
 [builtins fixtures/tuple.pyi]
+
+[case testForLoopIndexVaribaleNarrowing1]
+# flags: --local-partial-types
+from typing import Union
+x: Union[int, str]
+x = "abc"
+for x in list[int]():
+    reveal_type(x)  # N: Revealed type is "builtins.int"
+reveal_type(x) # N: Revealed type is "Union[builtins.int, builtins.str]"
+
+[case testForLoopIndexVaribaleNarrowing2]
+# flags: --enable-error-code=redundant-expr
+from typing import Union
+x: Union[int, str]
+x = "abc"
+for x in list[int]():
+    reveal_type(x)  # N: Revealed type is "builtins.int"
+reveal_type(x) # N: Revealed type is "Union[builtins.int, builtins.str]"
