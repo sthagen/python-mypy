@@ -15,6 +15,7 @@ from mypyc.ir.rtypes import (
     object_rprimitive,
     pointer_rprimitive,
     str_rprimitive,
+    tuple_rprimitive,
 )
 from mypyc.primitives.registry import (
     ERR_NEG_INT,
@@ -104,18 +105,38 @@ str_build_op = custom_op(
 method_op(
     name="startswith",
     arg_types=[str_rprimitive, str_rprimitive],
+    return_type=c_int_rprimitive,
+    c_function_name="CPyStr_Startswith",
+    truncated_type=bool_rprimitive,
+    error_kind=ERR_NEVER,
+)
+
+# str.startswith(tuple)
+method_op(
+    name="startswith",
+    arg_types=[str_rprimitive, tuple_rprimitive],
     return_type=bool_rprimitive,
     c_function_name="CPyStr_Startswith",
-    error_kind=ERR_NEVER,
+    error_kind=ERR_MAGIC,
 )
 
 # str.endswith(str)
 method_op(
     name="endswith",
     arg_types=[str_rprimitive, str_rprimitive],
+    return_type=c_int_rprimitive,
+    c_function_name="CPyStr_Endswith",
+    truncated_type=bool_rprimitive,
+    error_kind=ERR_NEVER,
+)
+
+# str.endswith(tuple)
+method_op(
+    name="endswith",
+    arg_types=[str_rprimitive, tuple_rprimitive],
     return_type=bool_rprimitive,
     c_function_name="CPyStr_Endswith",
-    error_kind=ERR_NEVER,
+    error_kind=ERR_MAGIC,
 )
 
 # str.removeprefix(str)
@@ -175,6 +196,24 @@ for i in range(2):
         extra_int_constants=str_splitlines_constants[i],
         error_kind=ERR_NEVER,
     )
+
+# str.partition(str)
+method_op(
+    name="partition",
+    arg_types=[str_rprimitive, str_rprimitive],
+    return_type=tuple_rprimitive,
+    c_function_name="PyUnicode_Partition",
+    error_kind=ERR_MAGIC,
+)
+
+# str.rpartition(str)
+method_op(
+    name="rpartition",
+    arg_types=[str_rprimitive, str_rprimitive],
+    return_type=tuple_rprimitive,
+    c_function_name="PyUnicode_RPartition",
+    error_kind=ERR_MAGIC,
+)
 
 # str.replace(old, new)
 method_op(

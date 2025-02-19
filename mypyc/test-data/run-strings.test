@@ -20,12 +20,20 @@ def eq(x: str) -> int:
     return 2
 def match(x: str, y: str) -> Tuple[bool, bool]:
     return (x.startswith(y), x.endswith(y))
+def match_tuple(x: str, y: Tuple[str, ...]) -> Tuple[bool, bool]:
+    return (x.startswith(y), x.endswith(y))
+def match_tuple_literal_args(x: str, y: str, z: str) -> Tuple[bool, bool]:
+    return (x.startswith((y, z)), x.endswith((y, z)))
 def remove_prefix_suffix(x: str, y: str) -> Tuple[str, str]:
     return (x.removeprefix(y), x.removesuffix(y))
 
 [file driver.py]
-from native import f, g, tostr, booltostr, concat, eq, match, remove_prefix_suffix
+from native import (
+    f, g, tostr, booltostr, concat, eq, match, match_tuple,
+    match_tuple_literal_args, remove_prefix_suffix
+)
 import sys
+from testutil import assertRaises
 
 assert f() == 'some string'
 assert f() is sys.intern('some string')
@@ -45,13 +53,26 @@ assert match('abc', '') == (True, True)
 assert match('abc', 'a') == (True, False)
 assert match('abc', 'c') == (False, True)
 assert match('', 'abc') == (False, False)
+assert match_tuple('abc', ('d', 'e')) == (False, False)
+assert match_tuple('abc', ('a', 'c')) == (True, True)
+assert match_tuple('abc', ('a',)) == (True, False)
+assert match_tuple('abc', ('c',)) == (False, True)
+assert match_tuple('abc', ('x', 'y', 'z')) == (False, False)
+assert match_tuple('abc', ('x', 'y', 'z', 'a', 'c')) == (True, True)
+with assertRaises(TypeError, "tuple for startswith must only contain str"):
+    assert match_tuple('abc', (None,))
+with assertRaises(TypeError, "tuple for endswith must only contain str"):
+    assert match_tuple('abc', ('a', None))
+assert match_tuple_literal_args('abc', 'z', 'a') == (True, False)
+assert match_tuple_literal_args('abc', 'z', 'c') == (False, True)
 
 assert remove_prefix_suffix('', '') == ('', '')
 assert remove_prefix_suffix('abc', 'a') == ('bc', 'abc')
 assert remove_prefix_suffix('abc', 'c') == ('abc', 'ab')
 
 [case testStringOps]
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from testutil import assertRaises
 
 def do_split(s: str, sep: Optional[str] = None, max_split: Optional[int] = None) -> List[str]:
     if sep is not None:
@@ -101,10 +122,26 @@ def test_splitlines() -> None:
     assert splitlines(s_text, False) == ["This", "is", "", "some", "long", "text."]
     assert splitlines(s_text, True) == ["This\n", "is\n", "\n", "some\n", "long\n", "text.\n"]
 
+s_partition = "Some long text"
+
+def partition(s: str, sep: str) -> Tuple[str, str, str]:
+    return s.partition(sep)
+
+def rpartition(s: str, sep: str) -> Tuple[str, str, str]:
+    return s.rpartition(sep)
+
+def test_partition() -> None:
+    assert partition(s_partition, " ") == ("Some", " ", "long text")
+    assert partition(s_partition, "Hello") == ("Some long text", "", "")
+    assert rpartition(s_partition, " ") == ("Some long", " ", "text")
+    assert rpartition(s_partition, "Hello") == ("", "", "Some long text")
+    with assertRaises(ValueError, "empty separator"):
+        partition(s_partition, "")
+    with assertRaises(ValueError, "empty separator"):
+        rpartition(s_partition, "")
+
 def getitem(s: str, index: int) -> str:
     return s[index]
-
-from testutil import assertRaises
 
 s = "abc"
 
