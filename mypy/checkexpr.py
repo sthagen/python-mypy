@@ -15,12 +15,7 @@ import mypy.checker
 import mypy.errorcodes as codes
 from mypy import applytype, erasetype, join, message_registry, nodes, operators, types
 from mypy.argmap import ArgTypeExpander, map_actuals_to_formals, map_formals_to_actuals
-from mypy.checkmember import (
-    analyze_member_access,
-    freeze_all_type_vars,
-    type_object_type,
-    typeddict_callable,
-)
+from mypy.checkmember import analyze_member_access, typeddict_callable
 from mypy.checkstrformat import StringFormatterChecker
 from mypy.erasetype import erase_type, remove_instance_last_known_values, replace_meta_vars
 from mypy.errors import ErrorWatcher, report_internal_error
@@ -138,6 +133,7 @@ from mypy.typeops import (
     erase_to_union_or_bound,
     false_only,
     fixup_partial_type,
+    freeze_all_type_vars,
     function_type,
     get_all_type_vars,
     get_type_vars,
@@ -148,6 +144,7 @@ from mypy.typeops import (
     try_expanding_sum_type_to_union,
     try_getting_str_literals,
     tuple_fallback,
+    type_object_type,
 )
 from mypy.types import (
     LITERAL_TYPE_NAMES,
@@ -1505,7 +1502,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     is_lvalue=False,
                     is_super=False,
                     is_operator=False,
-                    msg=self.msg,
                     original_type=object_type,
                     chk=self.chk,
                     in_literal_context=self.is_literal_context(),
@@ -1593,7 +1589,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 is_lvalue=False,
                 is_super=False,
                 is_operator=True,
-                msg=self.msg,
                 original_type=original_type or callee,
                 chk=self.chk,
                 in_literal_context=self.is_literal_context(),
@@ -3353,7 +3348,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                 is_lvalue=is_lvalue,
                 is_super=False,
                 is_operator=False,
-                msg=self.msg,
                 original_type=original_type,
                 chk=self.chk,
                 in_literal_context=self.is_literal_context(),
@@ -3377,7 +3371,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             is_lvalue=False,
             is_super=False,
             is_operator=False,
-            msg=self.msg,
             original_type=base_type,
             chk=self.chk,
             in_literal_context=self.is_literal_context(),
@@ -3872,7 +3865,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
             is_lvalue=False,
             is_super=False,
             is_operator=True,
-            msg=self.msg,
             original_type=original_type,
             self_type=base_type,
             chk=self.chk,
@@ -3967,7 +3959,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     is_operator=True,
                     original_type=base_type,
                     context=context,
-                    msg=self.msg,
                     chk=self.chk,
                     in_literal_context=self.is_literal_context(),
                 )
@@ -5568,7 +5559,6 @@ class ExpressionChecker(ExpressionVisitor[Type]):
                     original_type=instance_type,
                     override_info=base,
                     context=e,
-                    msg=self.msg,
                     chk=self.chk,
                     in_literal_context=self.is_literal_context(),
                 )
