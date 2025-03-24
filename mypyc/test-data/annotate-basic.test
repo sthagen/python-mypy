@@ -1,0 +1,20 @@
+[case testAnnotateNonNativeAttribute]
+def f(x):
+    return x.foo  # A: Get non-native attribute "foo".
+
+class C:
+    foo: int
+
+def g(x: C) -> int:
+    return x.foo
+
+[case testAnnotateGenericAdd]
+def f(x):
+    return x + 1  # A: Generic "+" operation.
+
+def g(x: int) -> int:
+    return x + 1
+
+[case testAnnotateTwoOperationsOnLine]
+def f(x):
+    return x.foo + 1  # A: Get non-native attribute "foo". Generic "+" operation.
