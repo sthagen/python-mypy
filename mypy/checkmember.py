@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Callable, cast
+from typing import Callable, cast
 
-from mypy import message_registry, subtypes
+from mypy import message_registry, state, subtypes
+from mypy.checker_shared import TypeCheckerSharedApi
 from mypy.erasetype import erase_typevars
 from mypy.expandtype import (
     expand_self_type,
@@ -73,11 +74,6 @@ from mypy.types import (
     get_proper_type,
 )
 
-if TYPE_CHECKING:  # import for forward declaration only
-    import mypy.checker
-
-from mypy import state
-
 
 class MemberContext:
     """Information and objects needed to type check attribute access.
@@ -93,7 +89,7 @@ class MemberContext:
         is_operator: bool,
         original_type: Type,
         context: Context,
-        chk: mypy.checker.TypeChecker,
+        chk: TypeCheckerSharedApi,
         self_type: Type | None = None,
         module_symbol_table: SymbolTable | None = None,
         no_deferral: bool = False,
@@ -165,7 +161,7 @@ def analyze_member_access(
     is_super: bool,
     is_operator: bool,
     original_type: Type,
-    chk: mypy.checker.TypeChecker,
+    chk: TypeCheckerSharedApi,
     override_info: TypeInfo | None = None,
     in_literal_context: bool = False,
     self_type: Type | None = None,
@@ -384,6 +380,9 @@ def validate_super_call(node: FuncBase, mx: MemberContext) -> None:
         if node.impl:
             impl = node.impl if isinstance(node.impl, FuncDef) else node.impl.func
             unsafe_super = impl.is_trivial_body
+        elif not node.is_property and node.items:
+            assert isinstance(node.items[0], Decorator)
+            unsafe_super = node.items[0].func.is_trivial_body
     if unsafe_super:
         mx.msg.unsafe_super(node.name, node.info.name, mx.context)
 
