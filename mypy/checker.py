@@ -130,6 +130,7 @@ from mypy.nodes import (
     WhileStmt,
     WithStmt,
     YieldExpr,
+    get_func_def,
     is_final_node,
 )
 from mypy.operators import flip_ops, int_op_to_method, neg_ops
@@ -703,6 +704,12 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                     # TODO: keep precise type for callables with tricky but valid signatures.
                     setter_type = fallback_setter_type
                 defn.items[0].var.setter_type = setter_type
+                if isinstance(defn.type, Overloaded):
+                    # Update legacy property type for decorated properties.
+                    getter_type = self.extract_callable_type(defn.items[0].var.type, defn)
+                    if getter_type is not None:
+                        getter_type.definition = defn.items[0]
+                        defn.type.items[0] = getter_type
         for i, fdef in enumerate(defn.items):
             assert isinstance(fdef, Decorator)
             if defn.is_property:
@@ -730,7 +737,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                     assert isinstance(item, Decorator)
                     item_type = self.extract_callable_type(item.var.type, item)
                     if item_type is not None:
-                        item_type.definition = item.func
+                        item_type.definition = item
                         item_types.append(item_type)
                 if item_types:
                     defn.type = Overloaded(item_types)
@@ -2501,8 +2508,9 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
 
                 override_ids = override.type_var_ids()
                 type_name = None
-                if isinstance(override.definition, FuncDef):
-                    type_name = override.definition.info.name
+                definition = get_func_def(override)
+                if isinstance(definition, FuncDef):
+                    type_name = definition.info.name
 
                 def erase_override(t: Type) -> Type:
                     return erase_typevars(t, ids_to_erase=override_ids)
@@ -3509,6 +3517,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                     continue
 
                 base_type, base_node = self.node_type_from_base(lvalue_node.name, base, lvalue)
+                # TODO: if the r.h.s. is a descriptor, we should check setter override as well.
                 custom_setter = is_custom_settable_property(base_node)
                 if isinstance(base_type, PartialType):
                     base_type = None
@@ -4494,6 +4503,8 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                     if isinstance(p_type, Overloaded):
                         # TODO: in theory we can have a property with a deleter only.
                         var.is_settable_property = True
+                        assert isinstance(definition, Decorator), definition
+                        var.setter_type = definition.var.setter_type
 
     def set_inference_error_fallback_type(self, var: Var, lvalue: Lvalue, type: Type) -> None:
         """Store best known type for variable if type inference failed.
@@ -5356,6 +5367,8 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
             self.check_untyped_after_decorator(sig, e.func)
         self.require_correct_self_argument(sig, e.func)
         sig = set_callable_name(sig, e.func)
+        if isinstance(sig, CallableType):
+            sig.definition = e
         e.var.type = sig
         e.var.is_ready = True
         if e.func.is_property:
@@ -6218,21 +6231,26 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                 attr = try_getting_str_literals(node.args[1], self.lookup_type(node.args[1]))
                 if literal(expr) == LITERAL_TYPE and attr and len(attr) == 1:
                     return self.hasattr_type_maps(expr, self.lookup_type(expr), attr[0])
-            elif isinstance(node.callee, RefExpr):
-                if node.callee.type_guard is not None or node.callee.type_is is not None:
+            else:
+                type_is, type_guard = None, None
+                called_type = self.lookup_type_or_none(node.callee)
+                if called_type is not None:
+                    called_type = get_proper_type(called_type)
+                    # TODO: there are some more cases in check_call() to handle.
+                    # If the callee is an instance, try to extract TypeGuard/TypeIs from its __call__ method.
+                    if isinstance(called_type, Instance):
+                        call = find_member("__call__", called_type, called_type, is_operator=True)
+                        if call is not None:
+                            called_type = get_proper_type(call)
+                    if isinstance(called_type, CallableType):
+                        type_is, type_guard = called_type.type_is, called_type.type_guard
+
+                # If the callee is a RefExpr, extract TypeGuard/TypeIs directly.
+                if isinstance(node.callee, RefExpr):
+                    type_is, type_guard = node.callee.type_is, node.callee.type_guard
+                if type_guard is not None or type_is is not None:
                     # TODO: Follow *args, **kwargs
                     if node.arg_kinds[0] != nodes.ARG_POS:
-                        # the first argument might be used as a kwarg
-                        called_type = get_proper_type(self.lookup_type(node.callee))
-
-                        # TODO: there are some more cases in check_call() to handle.
-                        if isinstance(called_type, Instance):
-                            call = find_member(
-                                "__call__", called_type, called_type, is_operator=True
-                            )
-                            if call is not None:
-                                called_type = get_proper_type(call)
-
                         # *assuming* the overloaded function is correct, there's a couple cases:
                         #  1) The first argument has different names, but is pos-only. We don't
                         #     care about this case, the argument must be passed positionally.
@@ -6245,9 +6263,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                                 # we want the idx-th variable to be narrowed
                                 expr = collapse_walrus(node.args[idx])
                             else:
-                                kind = (
-                                    "guard" if node.callee.type_guard is not None else "narrower"
-                                )
+                                kind = "guard" if type_guard is not None else "narrower"
                                 self.fail(
                                     message_registry.TYPE_GUARD_POS_ARG_REQUIRED.format(kind), node
                                 )
@@ -6258,15 +6274,15 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                         # considered "always right" (i.e. even if the types are not overlapping).
                         # Also note that a care must be taken to unwrap this back at read places
                         # where we use this to narrow down declared type.
-                        if node.callee.type_guard is not None:
-                            return {expr: TypeGuardedType(node.callee.type_guard)}, {}
+                        if type_guard is not None:
+                            return {expr: TypeGuardedType(type_guard)}, {}
                         else:
-                            assert node.callee.type_is is not None
+                            assert type_is is not None
                             return conditional_types_to_typemaps(
                                 expr,
                                 *self.conditional_types_with_intersection(
                                     self.lookup_type(expr),
-                                    [TypeRange(node.callee.type_is, is_upper_bound=False)],
+                                    [TypeRange(type_is, is_upper_bound=False)],
                                     expr,
                                     consider_runtime_isinstance=False,
                                 ),
@@ -8651,8 +8667,10 @@ class SetNothingToAny(TypeTranslator):
         return t.copy_modified(args=[a.accept(self) for a in t.args])
 
 
-def is_classmethod_node(node: Node | None) -> bool | None:
+def is_classmethod_node(node: SymbolNode | None) -> bool | None:
     """Find out if a node describes a classmethod."""
+    if isinstance(node, Decorator):
+        node = node.func
     if isinstance(node, FuncDef):
         return node.is_class
     if isinstance(node, Var):
@@ -8660,8 +8678,10 @@ def is_classmethod_node(node: Node | None) -> bool | None:
     return None
 
 
-def is_node_static(node: Node | None) -> bool | None:
+def is_node_static(node: SymbolNode | None) -> bool | None:
     """Find out if a node describes a static function method."""
+    if isinstance(node, Decorator):
+        node = node.func
     if isinstance(node, FuncDef):
         return node.is_static
     if isinstance(node, Var):
