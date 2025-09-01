@@ -543,7 +543,7 @@ class TypeVarId:
     # function type variables.
 
     # Metavariables are allocated unique ids starting from 1.
-    raw_id: int
+    raw_id: Final[int]
 
     # Level of the variable in type inference. Currently either 0 for
     # declared types, or 1 for type inference metavariables.
@@ -586,7 +586,7 @@ class TypeVarId:
         return not (self == other)
 
     def __hash__(self) -> int:
-        return hash((self.raw_id, self.meta_level, self.namespace))
+        return self.raw_id ^ (self.meta_level << 8) ^ hash(self.namespace)
 
     def is_meta_var(self) -> bool:
         return self.meta_level > 0
@@ -1708,6 +1708,23 @@ class Instance(ProperType):
 
     def write(self, data: Buffer) -> None:
         write_tag(data, INSTANCE)
+        if not self.args and not self.last_known_value and not self.extra_attrs:
+            type_ref = self.type.fullname
+            if type_ref == "builtins.str":
+                write_tag(data, INSTANCE_STR)
+            elif type_ref == "builtins.function":
+                write_tag(data, INSTANCE_FUNCTION)
+            elif type_ref == "builtins.int":
+                write_tag(data, INSTANCE_INT)
+            elif type_ref == "builtins.bool":
+                write_tag(data, INSTANCE_BOOL)
+            elif type_ref == "builtins.object":
+                write_tag(data, INSTANCE_OBJECT)
+            else:
+                write_tag(data, INSTANCE_SIMPLE)
+                write_str(data, type_ref)
+            return
+        write_tag(data, INSTANCE_GENERIC)
         write_str(data, self.type.fullname)
         write_type_list(data, self.args)
         write_type_opt(data, self.last_known_value)
@@ -1719,6 +1736,39 @@ class Instance(ProperType):
 
     @classmethod
     def read(cls, data: Buffer) -> Instance:
+        tag = read_tag(data)
+        # This is quite verbose, but this is very hot code, so we are not
+        # using dictionary lookups here.
+        if tag == INSTANCE_STR:
+            if instance_cache.str_type is None:
+                instance_cache.str_type = Instance(NOT_READY, [])
+                instance_cache.str_type.type_ref = "builtins.str"
+            return instance_cache.str_type
+        if tag == INSTANCE_FUNCTION:
+            if instance_cache.function_type is None:
+                instance_cache.function_type = Instance(NOT_READY, [])
+                instance_cache.function_type.type_ref = "builtins.function"
+            return instance_cache.function_type
+        if tag == INSTANCE_INT:
+            if instance_cache.int_type is None:
+                instance_cache.int_type = Instance(NOT_READY, [])
+                instance_cache.int_type.type_ref = "builtins.int"
+            return instance_cache.int_type
+        if tag == INSTANCE_BOOL:
+            if instance_cache.bool_type is None:
+                instance_cache.bool_type = Instance(NOT_READY, [])
+                instance_cache.bool_type.type_ref = "builtins.bool"
+            return instance_cache.bool_type
+        if tag == INSTANCE_OBJECT:
+            if instance_cache.object_type is None:
+                instance_cache.object_type = Instance(NOT_READY, [])
+                instance_cache.object_type.type_ref = "builtins.object"
+            return instance_cache.object_type
+        if tag == INSTANCE_SIMPLE:
+            inst = Instance(NOT_READY, [])
+            inst.type_ref = read_str(data)
+            return inst
+        assert tag == INSTANCE_GENERIC
         type_ref = read_str(data)
         inst = Instance(NOT_READY, read_type_list(data))
         inst.type_ref = type_ref
@@ -1767,6 +1817,25 @@ class Instance(ProperType):
             and len(self.type.enum_members) == 1
             or self.type.fullname in ELLIPSIS_TYPE_NAMES
         )
+
+
+class InstanceCache:
+    def __init__(self) -> None:
+        self.str_type: Instance | None = None
+        self.function_type: Instance | None = None
+        self.int_type: Instance | None = None
+        self.bool_type: Instance | None = None
+        self.object_type: Instance | None = None
+
+    def reset(self) -> None:
+        self.str_type = None
+        self.function_type = None
+        self.int_type = None
+        self.bool_type = None
+        self.object_type = None
+
+
+instance_cache: Final = InstanceCache()
 
 
 class FunctionLike(ProperType):
@@ -2104,14 +2173,12 @@ class CallableType(FunctionLike):
     ) -> None:
         super().__init__(line, column)
         assert len(arg_types) == len(arg_kinds) == len(arg_names)
-        for t, k in zip(arg_types, arg_kinds):
+        self.arg_types = list(arg_types)
+        for t in self.arg_types:
             if isinstance(t, ParamSpecType):
                 assert not t.prefix.arg_types
                 # TODO: should we assert that only ARG_STAR contain ParamSpecType?
                 # See testParamSpecJoin, that relies on passing e.g `P.args` as plain argument.
-        if variables is None:
-            variables = []
-        self.arg_types = list(arg_types)
         self.arg_kinds = arg_kinds
         self.arg_names = list(arg_names)
         self.min_args = arg_kinds.count(ARG_POS)
@@ -2123,7 +2190,11 @@ class CallableType(FunctionLike):
         #   * If it is a non-decorated function, FuncDef is the definition
         #   * If it is a decorated function, enclosing Decorator is the definition
         self.definition = definition
-        self.variables = variables
+        self.variables: tuple[TypeVarLikeType, ...]
+        if variables is None:
+            self.variables = ()
+        else:
+            self.variables = tuple(variables)
         self.is_ellipsis_args = is_ellipsis_args
         self.implicit = implicit
         self.special_sig = special_sig
@@ -4139,6 +4210,14 @@ LITERAL_TYPE: Final[Tag] = 16
 UNION_TYPE: Final[Tag] = 17
 TYPE_TYPE: Final[Tag] = 18
 PARAMETERS: Final[Tag] = 19
+
+INSTANCE_STR: Final[Tag] = 101
+INSTANCE_FUNCTION: Final[Tag] = 102
+INSTANCE_INT: Final[Tag] = 103
+INSTANCE_BOOL: Final[Tag] = 104
+INSTANCE_OBJECT: Final[Tag] = 105
+INSTANCE_SIMPLE: Final[Tag] = 106
+INSTANCE_GENERIC: Final[Tag] = 107
 
 
 def read_type(data: Buffer) -> Type:
