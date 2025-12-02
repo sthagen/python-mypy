@@ -1090,7 +1090,7 @@ import foo # type: ignore
 [builtins fixtures/module.pyi]
 [stale]
 
-[case testIncrementalWithSilentImportsAndIgnore]
+[case testIncrementalWithSilentImportsAndIgnore_no_parallel]
 # cmd: mypy -m main b
 # cmd2: mypy -m main c c.submodule
 # flags: --follow-imports=skip
@@ -6902,7 +6902,7 @@ class TheClass:
 tmp/a.py:3: note: Revealed type is "def (value: builtins.object) -> lib.TheClass.pyenum@6"
 
 
-[case testIncrementalFunctoolsPartial]
+[case testIncrementalFunctoolsPartial_no_parallel]
 import a
 
 [file a.py]
