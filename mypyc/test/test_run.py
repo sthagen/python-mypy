@@ -78,6 +78,10 @@ files = [
     "run-librt-strings.test",
     "run-base64.test",
     "run-match.test",
+    "run-vecs-i64-interp.test",
+    "run-vecs-misc-interp.test",
+    "run-vecs-t-interp.test",
+    "run-vecs-nested-interp.test",
 ]
 
 if sys.version_info >= (3, 12):
@@ -260,6 +264,7 @@ class TestRun(MypycDataSuite):
                 strict_dunder_typing=self.strict_dunder_typing,
                 depends_on_librt_internal=librt_internal,
                 experimental_features=experimental_features,
+                strict_traceback_checks=True,
             )
             result = emitmodule.parse_and_typecheck(
                 sources=sources,
