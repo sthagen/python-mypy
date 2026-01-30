@@ -880,7 +880,7 @@ def f1(x: Literal[1, 2, None], y: Custom):
         reveal_type(x)   # N: Revealed type is "Literal[1]"
         reveal_type(y)   # N: Revealed type is "__main__.Custom"
     else:
-        reveal_type(x)   # N: Revealed type is "Literal[2] | None"
+        reveal_type(x)   # N: Revealed type is "Literal[1] | Literal[2] | None"
         reveal_type(y)   # N: Revealed type is "__main__.Custom"
 
 class Default: pass
@@ -3020,6 +3020,20 @@ def f2(x: Any) -> None:
     reveal_type(x)  # N: Revealed type is "Any"
 [builtins fixtures/tuple.pyi]
 
+[case testNarrowChainedContainment]
+# flags: --strict-equality --warn-unreachable
+
+def bad_compare_has_key(has_key: bool, key: str, s: tuple[str, ...]) -> None:
+    if has_key == key in s:  # E: Non-overlapping equality check (left operand type: "bool", right operand type: "str")
+        reveal_type(has_key)  # N: Revealed type is "builtins.bool"
+        reveal_type(key)  # N: Revealed type is "builtins.str"
+
+def bad_but_should_pass(has_key: bool, key: bool, s: tuple[bool, ...]) -> None:
+    if has_key == key in s:
+        reveal_type(has_key)  # N: Revealed type is "builtins.bool"
+        reveal_type(key)  # N: Revealed type is "builtins.bool"
+[builtins fixtures/primitives.pyi]
+
 [case testNarrowTypeObject]
 # flags: --strict-equality --warn-unreachable
 from typing import Any
@@ -3166,13 +3180,22 @@ if type(x) is type(y) is type(z):
     reveal_type(y) # N: Revealed type is "collections.defaultdict[Any, Any]"
     reveal_type(z) # N: Revealed type is "collections.defaultdict[Any, Any]"
 
-[case testUnionTypeEquality-xfail]
+[case testTypeEqualsTypeObjectUnion]
+# flags: --strict-equality --warn-unreachable
+from __future__ import annotations
+def f(x: object, y: type[int] | type[str]):
+    if type(x) == y:
+        reveal_type(x)  # N: Revealed type is "builtins.int | builtins.str"
+        reveal_type(y)  # N: Revealed type is "type[builtins.int] | type[builtins.str]"
+[builtins fixtures/primitives.pyi]
+
+[case testUnionTypeEquality]
 # flags: --strict-equality --warn-unreachable
 from typing import Any, reveal_type
 
-x: Any = ()
-if type(x) == (int, str):
-    reveal_type(x) # E: Statement is unreachable
+def f(x: Any):
+    if type(x) == (int, str):  # E: Non-overlapping equality check (left operand type: "type[Any]", right operand type: "tuple[type[int], type[str]]")
+        reveal_type(x) # E: Statement is unreachable
 [builtins fixtures/tuple.pyi]
 
 [case testTypeIntersectionWithConcreteTypes]
