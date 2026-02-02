@@ -3221,7 +3221,7 @@ else:
     reveal_type(y) # N: Revealed type is "builtins.str"
 [builtins fixtures/isinstance.pyi]
 
-[case testTypeEqualsCheckUsingIsNonOverlappingChild-xfail]
+[case testTypeEqualsCheckUsingIsNonOverlappingChild]
 # flags: --strict-equality --warn-unreachable
 from typing import Union
 
@@ -3236,6 +3236,46 @@ def main(x: Union[B, C]):
     else:
         reveal_type(x)  # N: Revealed type is "__main__.B | __main__.C"
 [builtins fixtures/isinstance.pyi]
+
+[case testTypeEqualsCheckTypeVar]
+# flags: --strict-equality --warn-unreachable
+from typing import TypeVar
+
+class A: ...
+class B: ...
+
+T = TypeVar("T")
+
+def forgets_about_subclasses1(self, obj: T) -> T:
+    if isinstance(obj, A):
+        return A()  # E: Incompatible return value type (got "A", expected "T")
+    elif isinstance(obj, B):
+        return B()  # E: Incompatible return value type (got "B", expected "T")
+    raise
+
+def correct1(self, obj: T) -> T:
+    if type(obj) == A:
+        return A()  # E: Incompatible return value type (got "A", expected "T")
+    elif type(obj) == B:
+        return B()  # E: Incompatible return value type (got "B", expected "T")
+    raise
+
+T_value = TypeVar("T_value", A, B)
+
+def forgets_about_subclasses2(self, obj: T_value) -> T_value:
+    if isinstance(obj, A):
+        return A()  # E: Incompatible return value type (got "A", expected "B")
+    elif isinstance(obj, B):
+        return B()
+    raise
+
+def correct2(self, obj: T_value) -> T_value:
+    if type(obj) == A:
+        return A()
+    elif type(obj) == B:
+        return B()
+    raise
+[builtins fixtures/primitives.pyi]
 
 [case testTypeEqualsCheckUsingDifferentSpecializedTypes]
 # flags: --strict-equality --warn-unreachable
@@ -3458,3 +3498,80 @@ def foo(x: str | array) -> str:
         return result
     raise
 [builtins fixtures/tuple.pyi]
+
+[case testNarrowingOptionalBytes]
+from __future__ import annotations
+def f(x: bytes | None):
+    if x == b"asdf":
+        reveal_type(x)  # N: Revealed type is "builtins.bytes"
+    else:
+        reveal_type(x)  # N: Revealed type is "builtins.bytes | None"
+[builtins fixtures/primitives.pyi]
+
+[case testNarrowingBytesLikeWithPromotion]
+# flags: --strict-equality --warn-unreachable --strict-bytes
+from __future__ import annotations
+
+def check_test(x: bytes) -> None: ...
+check_test(bytearray(b"asdf"))  # E: Argument 1 to "check_test" has incompatible type "bytearray"; expected "bytes"
+
+def main(
+    v_bytes: bytes,
+    v_bytearray: bytearray,
+    v_memoryview: memoryview,
+    v_all: bytes | bytearray | memoryview,
+) -> None:
+    if v_bytes == v_bytearray:
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+    if v_bytes == v_memoryview:
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+    if v_bytearray == v_memoryview:
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+
+    if v_all == v_bytes:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+    if v_all == v_bytearray:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes | builtins.bytearray | builtins.memoryview"
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+    if v_all == v_memoryview:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes | builtins.bytearray | builtins.memoryview"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+[builtins fixtures/primitives.pyi]
+
+[case testNarrowingBytesLikeNoPromotion]
+# flags: --strict-equality --warn-unreachable --no-strict-bytes
+from __future__ import annotations
+
+def check_test(x: bytes) -> None: ...
+check_test(bytearray(b"asdf"))
+
+def main(
+    v_bytes: bytes,
+    v_bytearray: bytearray,
+    v_memoryview: memoryview,
+    v_all: bytes | bytearray | memoryview,
+) -> None:
+    if v_bytes == v_bytearray:
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+    if v_bytes == v_memoryview:
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+    if v_bytearray == v_memoryview:
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+
+    if v_all == v_bytes:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes"
+        reveal_type(v_bytes)  # N: Revealed type is "builtins.bytes"
+    if v_all == v_bytearray:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes | builtins.bytearray | builtins.memoryview"
+        reveal_type(v_bytearray)  # N: Revealed type is "builtins.bytearray"
+    if v_all == v_memoryview:
+        reveal_type(v_all)  # N: Revealed type is "builtins.bytes | builtins.bytearray | builtins.memoryview"
+        reveal_type(v_memoryview)  # N: Revealed type is "builtins.memoryview"
+[builtins fixtures/primitives.pyi]
