@@ -44,6 +44,7 @@ files = [
     "irbuild-i32.test",
     "irbuild-i16.test",
     "irbuild-u8.test",
+    "irbuild-vec-i64.test",
     "irbuild-vectorcall.test",
     "irbuild-unreachable.test",
     "irbuild-isinstance.test",
@@ -55,6 +56,7 @@ files = [
     "irbuild-weakref.test",
     "irbuild-librt-strings.test",
     "irbuild-base64.test",
+    "irbuild-time.test",
     "irbuild-match.test",
 ]
 
