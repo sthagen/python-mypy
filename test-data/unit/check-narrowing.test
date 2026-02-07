@@ -1008,6 +1008,22 @@ def f(x: Custom | None, y: int | None):
 [case testNarrowingCustomEqualityUnion4]
 # flags: --strict-equality --warn-unreachable
 from __future__ import annotations
+
+class Custom:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+def f(x: Custom | None, y: Custom):
+    if x == y:
+        # We unsoundly special case None and narrow x to Custom here
+        reveal_type(x)  # N: Revealed type is "__main__.Custom"
+    else:
+        reveal_type(x)  # N: Revealed type is "__main__.Custom | None"
+[builtins fixtures/primitives.pyi]
+
+[case testNarrowingCustomEqualityUnion5]
+# flags: --strict-equality --warn-unreachable
+from __future__ import annotations
 from typing import Any
 
 class Custom1:
@@ -1650,6 +1666,21 @@ if isinstance(t, (list, tuple)) and isinstance(t, tuple):
 else:
     reveal_type(t)  # N: Revealed type is "Any"
 reveal_type(t)  # N: Revealed type is "Any"
+[builtins fixtures/isinstancelist.pyi]
+
+[case testNarrowingAnyUnion]
+# flags: --strict-equality --warn-unreachable
+from __future__ import annotations
+from unknown import A, AA  # E: Cannot find implementation or library stub for module named "unknown" \
+                           # N: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+
+class B: ...
+
+def f(x: A | B) -> None:
+    if isinstance(x, (AA, B)):
+        reveal_type(x)  # N: Revealed type is "Any | __main__.B"
+    else:
+        reveal_type(x)  # N: Revealed type is "Any"
 [builtins fixtures/isinstancelist.pyi]
 
 [case testNarrowingLenItemAndLenCompare]
