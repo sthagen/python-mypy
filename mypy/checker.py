@@ -1387,7 +1387,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                 # Type check initialization expressions.
                 body_is_trivial = is_trivial_body(defn.body)
                 if not self.can_skip_diagnostics:
-                    self.check_default_args(item, body_is_trivial)
+                    self.check_default_params(item, body_is_trivial)
 
             # Type check body in a new scope.
             with self.binder.top_frame_context():
@@ -1710,22 +1710,22 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                         context=typ.ret_type,
                     )
 
-    def check_default_args(self, item: FuncItem, body_is_trivial: bool) -> None:
-        for arg in item.arguments:
-            if arg.initializer is None:
+    def check_default_params(self, item: FuncItem, body_is_trivial: bool) -> None:
+        for param in item.arguments:
+            if param.initializer is None:
                 continue
-            if body_is_trivial and isinstance(arg.initializer, EllipsisExpr):
+            if body_is_trivial and isinstance(param.initializer, EllipsisExpr):
                 continue
-            name = arg.variable.name
+            name = param.variable.name
             msg = "Incompatible default for "
-            if name.startswith("__tuple_arg_"):
-                msg += f"tuple argument {name[12:]}"
+            if name.startswith("__tuple_param_"):
+                msg += f"tuple parameter {name[12:]}"
             else:
-                msg += f'argument "{name}"'
+                msg += f'parameter "{name}"'
             if (
                 not self.options.implicit_optional
-                and isinstance(arg.initializer, NameExpr)
-                and arg.initializer.fullname == "builtins.None"
+                and isinstance(param.initializer, NameExpr)
+                and param.initializer.fullname == "builtins.None"
             ):
                 notes = [
                     "PEP 484 prohibits implicit Optional. "
@@ -1736,11 +1736,11 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
             else:
                 notes = None
             self.check_simple_assignment(
-                arg.variable.type,
-                arg.initializer,
-                context=arg.initializer,
+                param.variable.type,
+                param.initializer,
+                context=param.initializer,
                 msg=ErrorMessage(msg, code=codes.ASSIGNMENT),
-                lvalue_name="argument",
+                lvalue_name="parameter",
                 rvalue_name="default",
                 notes=notes,
             )
@@ -6799,8 +6799,15 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
                     # However, for non-value targets, we cannot do this narrowing,
                     # and so we ignore else_map
                     # e.g. if (x: str | None) != (y: str), we cannot narrow x to None
-                    # TODO: this reachability gate is incorrect and should be removed
-                    if not is_unreachable_map(if_map):
+
+                    # It is correct to always narrow here. It improves behaviour on tests and
+                    # detects many inaccurate type annotations on primer.
+                    # However, because mypy does not currently check unreachable code, it feels
+                    # risky to narrow to unreachable without --warn-unreachable.
+                    # See also this specific primer comment, where I force primer to run with
+                    # --warn-unreachable to see what code we would stop checking:
+                    # https://github.com/python/mypy/pull/20660#issuecomment-3865794148
+                    if self.options.warn_unreachable or not is_unreachable_map(if_map):
                         all_if_maps.append(if_map)
 
         # Handle narrowing for operands with custom __eq__ methods specially
