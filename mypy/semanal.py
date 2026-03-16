@@ -2259,7 +2259,12 @@ class SemanticAnalyzer(
         if refers_to_fullname(decorator, FINAL_DECORATOR_NAMES):
             info.is_final = True
         elif refers_to_fullname(decorator, DISJOINT_BASE_DECORATOR_NAMES):
-            info.is_disjoint_base = True
+            if info.is_protocol:
+                self.fail("@disjoint_base cannot be used with protocol class", decorator)
+            elif info.typeddict_type is not None:
+                self.fail("@disjoint_base cannot be used with TypedDict", decorator)
+            else:
+                info.is_disjoint_base = True
         elif refers_to_fullname(decorator, TYPE_CHECK_ONLY_NAMES):
             info.is_type_check_only = True
         elif (deprecated := self.get_deprecated(decorator)) is not None:
