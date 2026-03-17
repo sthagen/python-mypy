@@ -6,6 +6,7 @@ import os
 from abc import abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from enum import Enum, unique
 from typing import (
     TYPE_CHECKING,
@@ -659,7 +660,7 @@ class FuncBase(Node):
         "is_final",  # Uses "@final"
         "is_explicit_override",  # Uses "@override"
         "is_type_check_only",  # Uses "@type_check_only"
-        "can_infer_vars",
+        "def_or_infer_vars",
         "_fullname",
     )
 
@@ -680,8 +681,8 @@ class FuncBase(Node):
         self.is_final = False
         self.is_explicit_override = False
         self.is_type_check_only = False
-        # Can this function/method infer types of variables defined outside? Currently,
-        # we only set this in cases like:
+        # Can this function/method define variables or infer variables defined outside?
+        # In particular, we set this in cases like:
         #     x = None
         #     def foo() -> None:
         #         global x
@@ -691,7 +692,7 @@ class FuncBase(Node):
         #         x = None
         #         def foo(self) -> None:
         #             self.x = 1
-        self.can_infer_vars = False
+        self.def_or_infer_vars = False
         # Name with module prefix
         self._fullname = ""
 
@@ -1035,7 +1036,6 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         "original_def",
         "is_trivial_body",
         "is_trivial_self",
-        "has_self_attr_def",
         "is_mypy_only",
         # Present only when a function is decorated with @typing.dataclass_transform or similar
         "dataclass_transform_spec",
@@ -1074,8 +1074,6 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         # the majority). In cases where self is not annotated and there are no Self
         # in the signature we can simply drop the first argument.
         self.is_trivial_self = False
-        # Keep track of functions where self attributes are defined.
-        self.has_self_attr_def = False
         # This is needed because for positional-only arguments the name is set to None,
         # but we sometimes still want to show it in error messages.
         if arguments:
@@ -5087,6 +5085,26 @@ class DataclassTransformSpec:
         )
         assert read_tag(data) == END_TAG
         return ret
+
+
+@trait
+class SplittingVisitor:
+    # If True, process function definitions. If False, don't. This is used
+    # for processing module top levels in fine-grained incremental mode.
+    recurse_into_functions: bool
+
+    @contextmanager
+    def set_recurse_into_functions(self) -> Iterator[None]:
+        """Temporarily set recurse_into_functions to True.
+
+        This is used to process top-level functions/methods as a whole.
+        """
+        old_recurse_into_functions = self.recurse_into_functions
+        self.recurse_into_functions = True
+        try:
+            yield
+        finally:
+            self.recurse_into_functions = old_recurse_into_functions
 
 
 def get_flags(node: Node, names: list[str]) -> list[str]:
