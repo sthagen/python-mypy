@@ -294,6 +294,8 @@ class TestRun(MypycDataSuite):
             for line in e.messages:
                 print(fix_native_line_number(line, testcase.file, testcase.line))
             assert False, "Compile error"
+        finally:
+            result.manager.metastore.close()
 
         # Check that serialization works on this IR. (Only on the first
         # step because the returned ir only includes updated code.)
