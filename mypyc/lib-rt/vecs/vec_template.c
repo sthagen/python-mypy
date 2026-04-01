@@ -354,6 +354,71 @@ static PyMethodDef vec_methods[] = {
     {NULL, NULL, 0, NULL},  /* Sentinel */
 };
 
+// Iterator type for specialized vec types
+
+typedef struct {
+    PyObject_HEAD
+    VEC vec;              // Unboxed vec (keeps buffer alive via buf reference)
+    Py_ssize_t index;     // Current iteration index
+} NAME(IterObject);
+
+PyTypeObject NAME(IterType);
+
+static PyObject *vec_iter(PyObject *self) {
+    NAME(IterObject) *it = PyObject_New(NAME(IterObject), &NAME(IterType));
+    if (it == NULL)
+        return NULL;
+    it->vec = ((VEC_OBJECT *)self)->vec;
+    Py_XINCREF(it->vec.buf);
+    it->index = 0;
+    return (PyObject *)it;
+}
+
+static void vec_iter_dealloc(NAME(IterObject) *self) {
+    Py_XDECREF(self->vec.buf);
+    PyObject_Del(self);
+}
+
+static PyObject *vec_iter_next(NAME(IterObject) *self) {
+    if (self->vec.buf == NULL)
+        return NULL;
+    if (self->index < self->vec.len) {
+        PyObject *item = BOX_ITEM(self->vec.buf->items[self->index]);
+        if (item == NULL)
+            return NULL;
+        self->index++;
+        return item;
+    }
+    Py_CLEAR(self->vec.buf);
+    return NULL;  // StopIteration
+}
+
+static PyObject *vec_iter_len(NAME(IterObject) *self, PyObject *Py_UNUSED(ignored)) {
+    if (self->vec.buf == NULL)
+        return PyLong_FromSsize_t(0);
+    Py_ssize_t remaining = self->vec.len - self->index;
+    if (remaining < 0)
+        remaining = 0;
+    return PyLong_FromSsize_t(remaining);
+}
+
+static PyMethodDef vec_iter_methods[] = {
+    {"__length_hint__", (PyCFunction)vec_iter_len, METH_NOARGS, NULL},
+    {NULL, NULL, 0, NULL},
+};
+
+PyTypeObject NAME(IterType) = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "vec_iterator[" ITEM_TYPE_STR "]",
+    .tp_basicsize = sizeof(NAME(IterObject)),
+    .tp_itemsize = 0,
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_dealloc = (destructor)vec_iter_dealloc,
+    .tp_iter = PyObject_SelfIter,
+    .tp_iternext = (iternextfunc)vec_iter_next,
+    .tp_methods = vec_iter_methods,
+};
+
 PyTypeObject BUF_TYPE = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "vecbuf[" ITEM_TYPE_STR "]",
@@ -377,6 +442,7 @@ PyTypeObject VEC_TYPE = {
     //.tp_free = PyObject_Del,
     .tp_dealloc = (destructor)vec_dealloc,
     .tp_repr = (reprfunc)vec_repr,
+    .tp_iter = vec_iter,
     .tp_as_sequence = &vec_sequence_methods,
     .tp_as_mapping = &vec_mapping_methods,
     .tp_richcompare = vec_richcompare,
