@@ -21,6 +21,7 @@ from typing import (
 )
 
 from librt.internal import (
+    extract_symbol,
     read_float as read_float_bare,
     read_int as read_int_bare,
     read_str as read_str_bare,
@@ -4953,8 +4954,15 @@ class SymbolTableNode:
         sym.plugin_generated = read_bool(data)
         cross_ref = read_str_opt(data)
         if cross_ref is None:
-            sym._node = read_symbol(data)
-            if not isinstance(sym._node, TypeInfo):
+            tag = read_tag(data)
+            if tag == TYPE_INFO:
+                sym._node = TypeInfo.read(data)
+            else:
+                # This logic is temporary, to make sure we don't introduce
+                # regressions until we have proper lazy deserialization.
+                # It has negligible performance impact.
+                node_bytes = extract_symbol(data)
+                sym._node = read_symbol(ReadBuffer(node_bytes), tag)
                 sym.unfixed = True
         else:
             sym.cross_ref = cross_ref
@@ -5374,8 +5382,7 @@ IMPORTALL_METADATA: Final[Tag] = 228
 TSTRING_EXPR: Final[Tag] = 229
 
 
-def read_symbol(data: ReadBuffer) -> SymbolNode:
-    tag = read_tag(data)
+def read_symbol(data: ReadBuffer, tag: Tag) -> SymbolNode:
     # The branches here are ordered manually by type "popularity".
     if tag == VAR:
         return Var.read(data)
@@ -5383,8 +5390,6 @@ def read_symbol(data: ReadBuffer) -> SymbolNode:
         return FuncDef.read(data)
     if tag == DECORATOR:
         return Decorator.read(data)
-    if tag == TYPE_INFO:
-        return TypeInfo.read(data)
     if tag == OVERLOADED_FUNC_DEF:
         return OverloadedFuncDef.read(data)
     if tag == TYPE_VAR_EXPR:
