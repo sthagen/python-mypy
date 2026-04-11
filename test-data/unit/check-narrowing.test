@@ -1727,7 +1727,7 @@ reveal_type(c)  # N: Revealed type is "__main__.C"
 
 c1: C
 if isinstance(c1, tp) and isinstance(c1, D):
-    reveal_type(c1)  # N: Revealed type is "Any"
+    reveal_type(c1)  # N: Revealed type is "__main__.D"
 else:
     reveal_type(c1)  # N: Revealed type is "__main__.C"
 reveal_type(c1)  # N: Revealed type is "__main__.C"
@@ -1741,7 +1741,7 @@ reveal_type(c2)  # N: Revealed type is "__main__.C"
 
 c3: C
 if isinstance(c3, D) and isinstance(c3, tp):
-    reveal_type(c3)  # N: Revealed type is "Any"
+    reveal_type(c3)  # N: Revealed type is "__main__.D"
 else:
     reveal_type(c3)  # N: Revealed type is "__main__.C"
 reveal_type(c3)  # N: Revealed type is "__main__.C"

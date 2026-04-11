@@ -8633,15 +8633,19 @@ def and_conditional_maps(m1: TypeMap, m2: TypeMap, *, use_meet: bool = False) ->
     the truth of e2.
     """
     # Both conditions can be true; combine the information. Anything
-    # we learn from either conditions' truth is valid. If the same
-    # expression's type is refined by both conditions, we somewhat
-    # arbitrarily give precedence to m2 unless m1 value is Any.
-    # In the future, we could use an intersection type or meet_types().
+    # we learn from either conditions' truth is valid.
+    # If the same expression's type is refined by both conditions and use_meet=False, we somewhat
+    # arbitrarily give precedence to m2 unless m2's value is Any or m1's value is Never.
     result = m2.copy()
-    m2_keys = {literal_hash(n2) for n2 in m2}
+    m2_exprs = {literal_hash(n2): n2 for n2 in m2}
     for n1 in m1:
-        if literal_hash(n1) not in m2_keys or isinstance(
-            get_proper_type(m1[n1]), (AnyType, UninhabitedType)
+        n1_hash = literal_hash(n1)
+        if n1_hash not in m2_exprs or (
+            not use_meet
+            and (
+                isinstance(get_proper_type(m1[n1]), UninhabitedType)
+                or isinstance(get_proper_type(m2[m2_exprs[n1_hash]]), AnyType)
+            )
         ):
             result[n1] = m1[n1]
     if use_meet:
