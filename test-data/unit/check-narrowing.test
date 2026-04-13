@@ -3264,7 +3264,7 @@ def bad_but_should_pass(has_key: bool, key: bool, s: tuple[bool, ...]) -> None:
         reveal_type(key)  # N: Revealed type is "builtins.bool"
 [builtins fixtures/primitives.pyi]
 
-[case testNarrowChainedComparisonMeet]
+[case testNarrowChainedComparisonMeetAndForwardPropagation]
 # flags: --strict-equality --warn-unreachable
 from __future__ import annotations
 from typing import Any
@@ -3272,7 +3272,7 @@ from typing import Any
 def f1(a: str | None, b: str | None) -> None:
     if None is not a == b:
         reveal_type(a)  # N: Revealed type is "builtins.str"
-        reveal_type(b)  # N: Revealed type is "builtins.str | None"
+        reveal_type(b)  # N: Revealed type is "builtins.str"
 
     if (None is not a) and (a == b):
         reveal_type(a)  # N: Revealed type is "builtins.str"
@@ -3290,11 +3290,33 @@ def f2(a: Any | None, b: str | None) -> None:
 def f3(a: str | None, b: Any | None) -> None:
     if None is not a == b:
         reveal_type(a)  # N: Revealed type is "builtins.str"
-        reveal_type(b)  # N: Revealed type is "Any | builtins.str | None"
+        reveal_type(b)  # N: Revealed type is "Any | builtins.str"
 
     if (None is not a) and (a == b):
         reveal_type(a)  # N: Revealed type is "builtins.str"
         reveal_type(b)  # N: Revealed type is "Any | builtins.str"
+
+def f4(a: str | None, b: str | None, c: str | None) -> None:
+    if None is not a == b == c:
+        reveal_type(a)  # N: Revealed type is "builtins.str"
+        reveal_type(b)  # N: Revealed type is "builtins.str"
+        reveal_type(c)  # N: Revealed type is "builtins.str"
+
+    if (None is not a) and (a == b) and (b == c):
+        reveal_type(a)  # N: Revealed type is "builtins.str"
+        reveal_type(b)  # N: Revealed type is "builtins.str"
+        reveal_type(c)  # N: Revealed type is "builtins.str"
+
+def f5(pair: tuple[None, int] | tuple[str, str], other: str | None) -> None:
+    if None is not pair[0] == other:
+        reveal_type(pair[0])  # N: Revealed type is "builtins.str"
+        reveal_type(pair)  # N: Revealed type is "tuple[builtins.str, builtins.str]"
+        reveal_type(other)  # N: Revealed type is "builtins.str"
+
+    if (None is not pair[0]) and (pair[0] == other):
+        reveal_type(pair[0])  # N: Revealed type is "builtins.str"
+        reveal_type(pair)  # N: Revealed type is "tuple[builtins.str, builtins.str]"
+        reveal_type(other)  # N: Revealed type is "builtins.str"
 [builtins fixtures/primitives.pyi]
 
 [case testNarrowTypeObject]

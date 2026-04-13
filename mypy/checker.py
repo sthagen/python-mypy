@@ -6558,6 +6558,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         operands = [collapse_walrus(x) for x in node.operands]
         operand_types = []
         narrowable_operand_index_to_hash = {}
+        narrowable_operand_hash_to_index = {}
         for i, expr in enumerate(operands):
             if not self.has_type(expr):
                 return {}, {}
@@ -6582,6 +6583,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                 h = literal_hash(expr)
                 if h is not None:
                     narrowable_operand_index_to_hash[i] = h
+                    narrowable_operand_hash_to_index[h] = i
 
         # Step 2: Group operands chained by either the 'is' or '==' operands
         # together. For all other operands, we keep them in groups of size 2.
@@ -6672,6 +6674,18 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                 if_map, else_map = else_map, if_map
 
             partial_type_maps.append((if_map, else_map))
+
+            # Chained comparisons are conjunctions evaluated left-to-right. Feed what we learned
+            # from earlier true comparisons into later comparisons, similarly to `and`.
+            if len(simplified_operator_list) > 1:
+                for expr, expr_type in if_map.items():
+                    h = literal_hash(expr)
+                    if h is None or h not in narrowable_operand_hash_to_index:
+                        continue
+                    operand_index = narrowable_operand_hash_to_index[h]
+                    operand_types[operand_index] = meet_types(
+                        operand_types[operand_index], expr_type
+                    )
 
         # If we have found non-trivial restrictions from the regular comparisons,
         # then return soon. Otherwise try to infer restrictions involving `len(x)`.
