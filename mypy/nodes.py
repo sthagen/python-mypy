@@ -511,12 +511,12 @@ class MypyFile(SymbolNode):
         self._is_typeshed_file = None
         self.raw_data = None
 
-    def local_definitions(self) -> Iterator[Definition]:
+    def local_definitions(self, *, impl_only: bool = False) -> Iterator[Definition]:
         """Return all definitions within the module (including nested).
 
         This doesn't include imported definitions.
         """
-        return local_definitions(self.names, self.fullname)
+        return local_definitions(self.names, self.fullname, impl_only=impl_only)
 
     @property
     def name(self) -> str:
@@ -1075,6 +1075,7 @@ class FuncDef(FuncItem, SymbolNode, Statement):
         "original_def",
         "is_trivial_body",
         "is_trivial_self",
+        "is_invalid_redefinition",
         "is_mypy_only",
         # Present only when a function is decorated with @typing.dataclass_transform or similar
         "dataclass_transform_spec",
@@ -1119,6 +1120,10 @@ class FuncDef(FuncItem, SymbolNode, Statement):
             self.original_first_arg: str | None = arguments[0].variable.name
         else:
             self.original_first_arg = None
+        # Whether this function is an invalid redefinition of variable with the same name?
+        # We record this status to avoid multiple (similar but different) errors in case
+        # of partial types etc.
+        self.is_invalid_redefinition = False
 
     @property
     def name(self) -> str:
@@ -5302,11 +5307,12 @@ def get_func_def(typ: mypy.types.CallableType) -> SymbolNode | None:
 
 
 def local_definitions(
-    names: SymbolTable, name_prefix: str, info: TypeInfo | None = None
+    names: SymbolTable, name_prefix: str, info: TypeInfo | None = None, impl_only: bool = False
 ) -> Iterator[Definition]:
     """Iterate over local definitions (not imported) in a symbol table.
 
-    Recursively iterate over class members and nested classes.
+    Recursively iterate over class members and nested classes. If impl_only is True, do
+    not yield the classes themselves, only methods.
     """
     # TODO: What should the name be? Or maybe remove it?
     for name, symnode in names.items():
@@ -5317,9 +5323,21 @@ def local_definitions(
         fullname = name_prefix + "." + shortname
         node = symnode.node
         if node and node.fullname == fullname:
-            yield fullname, symnode, info
+            yield_node = True
+            if impl_only:
+                if not isinstance(node, (FuncDef, OverloadedFuncDef, Decorator)):
+                    yield_node = False
+                else:
+                    impl = node.func if isinstance(node, Decorator) else node
+                    # We never type-check generated methods. The generated classes however
+                    # need to be visited, so we don't skip them below.
+                    yield_node = not impl.def_or_infer_vars and not symnode.plugin_generated
+            if isinstance(node, (FuncDef, OverloadedFuncDef, Decorator)) and "@" in fullname:
+                yield_node = False
+            if yield_node:
+                yield fullname, symnode, info
             if isinstance(node, TypeInfo):
-                yield from local_definitions(node.names, fullname, node)
+                yield from local_definitions(node.names, fullname, node, impl_only)
 
 
 def set_info(node: SymbolNode, info: TypeInfo) -> None:

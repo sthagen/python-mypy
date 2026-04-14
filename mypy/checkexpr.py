@@ -5592,6 +5592,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 self.chk.binder.frame_context(can_skip=True, fall_through=0),
                 self.chk.scope.push_function(e),
             ):
+                # If in empty context, reset argument types (from previous passes),
+                # in the other branch argument types are set by check_func_def().
+                for arg in e.arguments:
+                    arg.variable.type = None
                 # Lambdas can have more than one element in body,
                 # when we add "fictional" AssignmentStatement nodes, like in:
                 # `lambda (a, b): a`
@@ -6535,7 +6539,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         if not isinstance(maybe_type_expr, MaybeTypeExpression):
             return None
 
-        # Check whether has already been parsed as a type expression
+        # Check whether it has already been parsed as a type expression
         # by SemanticAnalyzer.try_parse_as_type_expression(),
         # perhaps containing a string annotation
         if (
