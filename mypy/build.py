@@ -91,6 +91,7 @@ from mypy.checker import DeferredNode, TypeChecker
 from mypy.defaults import (
     WORKER_CONNECTION_TIMEOUT,
     WORKER_DONE_TIMEOUT,
+    WORKER_SHUTDOWN_TIMEOUT,
     WORKER_START_INTERVAL,
     WORKER_START_TIMEOUT,
 )
@@ -283,6 +284,7 @@ class WorkerClient:
         ]
         # Return early without waiting, caller must call connect() before using the client.
         self.proc = subprocess.Popen(command, env=env)
+        self.connected = False
 
     def connect(self) -> None:
         end_time = time.time() + WORKER_START_TIMEOUT
@@ -303,18 +305,19 @@ class WorkerClient:
                     # verify PIDs reliably.
                     assert pid == self.proc.pid, f"PID mismatch: {pid} vs {self.proc.pid}"
                 self.conn = IPCClient(connection_name, WORKER_CONNECTION_TIMEOUT)
+                self.connected = True
                 return
             except Exception as exc:
                 last_exception = exc
                 break
-        print("Failed to establish connection with worker:", last_exception)
-        sys.exit(2)
+        print(f"Failed to establish connection with worker: {last_exception}")
 
     def close(self) -> None:
-        self.conn.close()
+        if self.connected:
+            self.conn.close()
         # Technically we don't need to wait, but otherwise we will get ResourceWarnings.
         try:
-            self.proc.wait(timeout=1)
+            self.proc.wait(timeout=WORKER_SHUTDOWN_TIMEOUT)
         except subprocess.TimeoutExpired:
             pass
         if os.path.isfile(self.status_file):
@@ -346,7 +349,7 @@ def build(
 
     If a flush_errors callback is provided, all error messages will be
     passed to it and the errors and messages fields of BuildResult and
-    CompileError (respectively) will be empty. Otherwise those fields will
+    CompileError (respectively) will be empty. Otherwise, those fields will
     report any error messages.
 
     Args:
@@ -356,6 +359,9 @@ def build(
         (takes precedence over other directories)
       flush_errors: optional function to flush errors after a file is processed
       fscache: optionally a file-system cacher
+      stdout: Output stream to use instead of `sys.stdout`
+      stderr: Error stream to use instead of `sys.stderr`
+      extra_plugins: Plugins to use in addition to those loaded from config
       worker_env: An environment to start parallel build workers (used for tests)
     """
     # If we were not given a flush_errors, we use one that will populate those
@@ -376,14 +382,20 @@ def build(
     stderr = stderr or sys.stderr
     extra_plugins = extra_plugins or []
 
+    # Create metastore before workers to avoid race conditions.
+    metastore = create_metastore(options, parallel_worker=False)
     workers = []
     connect_threads = []
+    # A quasi-unique ID for this specific mypy invocation.
+    build_id = os.urandom(4).hex()
     if options.num_workers > 0:
         # TODO: switch to something more efficient than pickle (also in the daemon).
         pickled_options = pickle.dumps(options.snapshot())
         options_data = b64encode(pickled_options).decode()
         workers = [
-            WorkerClient(f".mypy_worker.{idx}.json", options_data, worker_env or os.environ)
+            WorkerClient(
+                f".mypy_worker.{build_id}.{idx}.json", options_data, worker_env or os.environ
+            )
             for idx in range(options.num_workers)
         ]
         sources_message = SourcesDataMessage(sources=sources)
@@ -394,6 +406,9 @@ def build(
         def connect(wc: WorkerClient, data: bytes) -> None:
             # Start loading sources in each worker as soon as it is up.
             wc.connect()
+            if not wc.connected:
+                # Caller should detect this and fail gracefully.
+                return
             wc.conn.write_bytes(data)
 
         # We don't wait for workers to be ready until they are actually needed.
@@ -414,6 +429,7 @@ def build(
             extra_plugins,
             workers,
             connect_threads,
+            metastore,
         )
         result.errors = messages
         return result
@@ -432,6 +448,8 @@ def build(
         for thread in connect_threads:
             thread.join()
         for worker in workers:
+            if not worker.connected:
+                continue
             try:
                 send(worker.conn, SccRequestMessage(scc_id=None, import_errors={}, mod_data={}))
             except (OSError, IPCException):
@@ -451,6 +469,7 @@ def build_inner(
     extra_plugins: Sequence[Plugin],
     workers: list[WorkerClient],
     connect_threads: list[Thread],
+    metastore: MetadataStore,
 ) -> BuildResult:
     if platform.python_implementation() == "CPython":
         # Run gc less frequently, as otherwise we can spend a large fraction of
@@ -499,6 +518,7 @@ def build_inner(
         fscache=fscache,
         stdout=stdout,
         stderr=stderr,
+        metastore=metastore,
     )
     manager.workers = workers
     if manager.verbosity() >= 2:
@@ -816,6 +836,7 @@ class BuildManager:
         stderr: TextIO,
         error_formatter: ErrorFormatter | None = None,
         parallel_worker: bool = False,
+        metastore: MetadataStore | None = None,
     ) -> None:
         self.stats: dict[str, Any] = {}  # Values are ints or floats
         # Use in cases where we need to prevent race conditions in stats reporting.
@@ -903,7 +924,9 @@ class BuildManager:
                 ]
             )
 
-        self.metastore = create_metastore(options, parallel_worker=parallel_worker)
+        if metastore is None:
+            metastore = create_metastore(options, parallel_worker=parallel_worker)
+        self.metastore = metastore
 
         # a mapping from source files to their corresponding shadow files
         # for efficient lookup
@@ -3983,6 +4006,9 @@ def dispatch(
         # Wait for workers since they may be needed at this point.
         for thread in connect_threads:
             thread.join()
+        not_connected = [str(idx) for idx, wc in enumerate(manager.workers) if not wc.connected]
+        if not_connected:
+            raise OSError(f"Cannot connect to build worker(s): {', '.join(not_connected)}")
         process_graph(graph, manager)
         # Update plugins snapshot.
         write_plugins_snapshot(manager)
