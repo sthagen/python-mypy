@@ -617,15 +617,17 @@ def f() -> Tuple[C, C]:
     return a, b
 [out]
 def f():
-    r0, a, r1, b :: __main__.C
-    r2 :: tuple[__main__.C, __main__.C]
+    r0, a, r1, b, r2, r3 :: __main__.C
+    r4 :: tuple[__main__.C, __main__.C]
 L0:
     r0 = C()
     a = r0
     r1 = C()
     b = r1
-    r2 = (a, b)
-    return r2
+    r2 = a
+    r3 = b
+    r4 = (r2, r3)
+    return r4
 
 [case testDecomposeTuple]
 from typing import Tuple

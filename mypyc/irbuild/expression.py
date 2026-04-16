@@ -1113,7 +1113,12 @@ def transform_tuple_expr(builder: IRBuilder, expr: TupleExpr) -> Value:
     items = []
     for item_expr, item_type in zip(expr.items, types):
         reg = builder.accept(item_expr)
-        items.append(builder.coerce(reg, item_type, item_expr.line))
+        item = builder.coerce(reg, item_type, item_expr.line)
+        if isinstance(item, Register):
+            temp = Register(item.type)
+            builder.assign(temp, item, item_expr.line)
+            item = temp
+        items.append(item)
     return builder.add(TupleSet(items, expr.line))
 
 

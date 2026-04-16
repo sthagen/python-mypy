@@ -2,6 +2,11 @@
 
 ## Next Release
 
+### Drop Support for Targeting Python 3.9
+
+Mypy no longer supports type checking code with `--python-version 3.9`.
+Use `--python-version 3.10` or newer.
+
 ## Mypy 1.20
 
 We’ve just uploaded mypy 1.20.0 to the Python Package Index ([PyPI](https://pypi.org/project/mypy/)).

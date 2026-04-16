@@ -5,10 +5,13 @@ The protocol of communication with the coordinator is as following:
 * Read (pickled) build options from command line.
 * Populate status file with pid and socket address.
 * Receive build sources from coordinator.
-* Load graph using the sources, and send ack to coordinator.
+* Initialize build manager with the sources, and send ack to coordinator.
+* Receive build graph from coordinator, and ack it.
 * Receive SCC structure from coordinator, and ack it.
-* Receive an SCC id from coordinator, process it, and send back the results.
-* When prompted by coordinator (with a scc_id=None message), cleanup and shutdown.
+* In a loop:
+  - Receive an SCC id from coordinator, and start processing it.
+  - SCC is processed in two phases: interface and implementation, send a response after each.
+  - When prompted by coordinator (with a scc_id=None message), cleanup and shutdown.
 """
 
 from __future__ import annotations
@@ -42,7 +45,8 @@ from mypy.build import (
     SccsDataMessage,
     SourcesDataMessage,
     load_plugins,
-    process_stale_scc,
+    process_stale_scc_implementation,
+    process_stale_scc_interface,
 )
 from mypy.cache import Tag, read_int_opt
 from mypy.defaults import RECURSION_LIMIT, WORKER_CONNECTION_TIMEOUT, WORKER_IDLE_TIMEOUT
@@ -179,6 +183,7 @@ def serve(server: IPCServer, ctx: ServerContext) -> None:
         manager.add_stats(scc_wait_time=t1 - t0, scc_receive_time=time.time() - t1)
         scc_id = scc_message.scc_id
         if scc_id is None:
+            # This indicates a shutdown request. Add GC stats before exiting.
             gc_stats = gc.get_stats()
             manager.add_stats(
                 gc_collections_gen0=gc_stats[0]["collections"],
@@ -190,16 +195,40 @@ def serve(server: IPCServer, ctx: ServerContext) -> None:
         t0 = time.time()
         try:
             load_states(scc, graph, manager, scc_message.import_errors, scc_message.mod_data)
-            result = process_stale_scc(graph, scc, manager, from_cache=graph_data.from_cache)
+            result = process_stale_scc_interface(
+                graph, scc, manager, from_cache=graph_data.from_cache
+            )
             # We must commit after each SCC, otherwise we break --sqlite-cache.
             manager.commit()
         except CompileError as blocker:
-            send(server, SccResponseMessage(scc_id=scc_id, blocker=blocker))
+            message = SccResponseMessage(scc_id=scc_id, is_interface=True, blocker=blocker)
+            timed_send(manager, server, message)
         else:
-            t1 = time.time()
-            send(server, SccResponseMessage(scc_id=scc_id, result=result))
-            manager.add_stats(scc_send_time=time.time() - t1)
+            mod_results = {}
+            stale = []
+            meta_files = []
+            for id, mod_result, meta_file in result:
+                stale.append(id)
+                mod_results[id] = mod_result
+                meta_files.append(meta_file)
+            message = SccResponseMessage(scc_id=scc_id, is_interface=True, result=mod_results)
+            timed_send(manager, server, message)
+            try:
+                result = process_stale_scc_implementation(graph, stale, manager, meta_files)
+                # Both phases write cache, so we should commit here as well.
+                manager.commit()
+            except CompileError as blocker:
+                message = SccResponseMessage(scc_id=scc_id, is_interface=False, blocker=blocker)
+            else:
+                message = SccResponseMessage(scc_id=scc_id, is_interface=False, result=result)
+            timed_send(manager, server, message)
         manager.add_stats(total_process_stale_time=time.time() - t0, stale_sccs_processed=1)
+
+
+def timed_send(manager: BuildManager, server: IPCServer, message: SccResponseMessage) -> None:
+    t0 = time.time()
+    send(server, message)
+    manager.add_stats(scc_send_time=time.time() - t0)
 
 
 def load_states(

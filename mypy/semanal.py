@@ -4206,10 +4206,7 @@ class SemanticAnalyzer(
             eager=eager,
             python_3_12_type_alias=pep_695,
         )
-        if isinstance(s.rvalue, (IndexExpr, CallExpr, OpExpr)) and (
-            not isinstance(rvalue, OpExpr)
-            or (self.options.python_version >= (3, 10) or self.is_stub_file)
-        ):
+        if isinstance(s.rvalue, (IndexExpr, CallExpr, OpExpr)):
             # Note: CallExpr is for "void = type(None)" and OpExpr is for "X | Y" union syntax.
             if not isinstance(s.rvalue.analyzed, TypeAliasExpr):
                 # Any existing node will be updated in-place below.
@@ -4370,9 +4367,7 @@ class SemanticAnalyzer(
                 "tuple" if isinstance(get_proper_type(current_node.target), TupleType) else "union"
             )
             messages.append(f"Invalid recursive alias: a {target} item of itself")
-        if detect_diverging_alias(
-            current_node, current_node.target, self.lookup_qualified, self.tvar_scope
-        ):
+        if detect_diverging_alias(current_node, current_node.target):
             messages.append("Invalid recursive alias: type variable nesting on right hand side")
         if messages:
             current_node.target = AnyType(TypeOfAny.from_error)

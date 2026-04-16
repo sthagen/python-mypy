@@ -378,6 +378,10 @@ def ready_to_read(conns: Sequence[IPCBase], timeout: float | None = None) -> lis
 
     Return index of each readable connection in the original list.
     """
+    unread_messages = [i for i, conn in enumerate(conns) if conn.buffer]
+    if unread_messages:
+        # If we already have unread messages in the buffer, return those first.
+        return unread_messages
     if sys.platform == "win32":
         # Windows doesn't support select() on named pipes. Instead, start an overlapped
         # ReadFile on each pipe (which internally creates an event via CreateEventW),
@@ -417,16 +421,36 @@ def ready_to_read(conns: Sequence[IPCBase], timeout: float | None = None) -> lis
                     ov.cancel()
                 raise IPCException(f"Failed to wait for connections: {_winapi.GetLastError()}")
 
-        # Check which pending operations completed, cancel the rest
+        # Cancel all pending operations. CancelIoEx is asynchronous, so an
+        # operation may have completed before the cancel took effect. We then
+        # wait for all operations to finalize and check each result: completed
+        # reads get their data saved and are marked ready; cancelled ones are
+        # simply skipped. This avoids a race between checking if an operation
+        # is signaled and cancelling it.
+        for _, ov in pending:
+            ov.cancel()
         for i, ov in pending:
-            if _winapi.WaitForSingleObject(ov.event, 0) == _winapi.WAIT_OBJECT_0:
+            try:
                 _, err = ov.GetOverlappedResult(True)
+            except OSError as e:
+                err = e.winerror
+                # Cancellation is expected here; broken/disconnected pipes should be
+                # surfaced as readable so the follow-up receive observes EOF/closure.
+                if err not in (
+                    _winapi.ERROR_OPERATION_ABORTED,
+                    _winapi.ERROR_BROKEN_PIPE,
+                    _winapi.ERROR_NETNAME_DELETED,
+                ):
+                    # Anything else is a real IPC failure, not part of the probe race.
+                    raise
+            if err == _winapi.ERROR_OPERATION_ABORTED:
+                # Operation was successfully cancelled -- no data consumed.
+                continue
+            if err in (0, _winapi.ERROR_MORE_DATA):
                 data = ov.getbuffer()
                 if data:
                     conns[i].buffer.extend(data)
-                ready.append(i)
-            else:
-                ov.cancel()
+            ready.append(i)
 
         return ready
 
