@@ -847,12 +847,13 @@ static PyObject *CPyImport_ImportFrom(PyObject *module, PyObject *package_name,
 fail:
     PyErr_Clear();
     PyObject *package_path = PyModule_GetFilenameObject(module);
+    PyObject *path_for_msg = package_path != NULL ? package_path : Py_None;
     PyObject *errmsg = PyUnicode_FromFormat("cannot import name %R from %R (%S)",
-                                            import_name, package_name, package_path);
+                                            import_name, package_name, path_for_msg);
     // NULL checks for errmsg and package_name done by PyErr_SetImportError.
     PyErr_SetImportError(errmsg, package_name, package_path);
-    Py_DECREF(package_path);
-    Py_DECREF(errmsg);
+    Py_XDECREF(package_path);
+    Py_XDECREF(errmsg);
     return NULL;
 }
 
