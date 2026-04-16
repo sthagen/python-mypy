@@ -1735,23 +1735,6 @@ _testEnumNameWorkCorrectlyOn311.py:13: note: Revealed type is "Literal['X']?"
 _testEnumNameWorkCorrectlyOn311.py:14: note: Revealed type is "int"
 _testEnumNameWorkCorrectlyOn311.py:15: note: Revealed type is "int"
 
-[case testTypeAliasNotSupportedWithNewStyleUnion]
-# flags: --python-version 3.9
-from typing_extensions import TypeAlias
-A = type[int] | str
-B = str | type[int]
-C = str | int
-D: TypeAlias = str | int
-[out]
-_testTypeAliasNotSupportedWithNewStyleUnion.py:3: error: Invalid type alias: expression is not a valid type
-_testTypeAliasNotSupportedWithNewStyleUnion.py:3: error: Unsupported left operand type for | ("GenericAlias")
-_testTypeAliasNotSupportedWithNewStyleUnion.py:4: error: Invalid type alias: expression is not a valid type
-_testTypeAliasNotSupportedWithNewStyleUnion.py:4: error: Unsupported left operand type for | ("type[str]")
-_testTypeAliasNotSupportedWithNewStyleUnion.py:5: error: Invalid type alias: expression is not a valid type
-_testTypeAliasNotSupportedWithNewStyleUnion.py:5: error: Unsupported left operand type for | ("type[str]")
-_testTypeAliasNotSupportedWithNewStyleUnion.py:6: error: Invalid type alias: expression is not a valid type
-_testTypeAliasNotSupportedWithNewStyleUnion.py:6: error: Unsupported left operand type for | ("type[str]")
-
 [case testTypedDictUnionGetFull]
 from typing import Dict
 from typing_extensions import TypedDict

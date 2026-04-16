@@ -671,7 +671,7 @@ subtly different, and it's important to understand how they differ to avoid pitf
 
    .. code-block:: python
 
-     from typing import TypeAlias  # "from typing_extensions" in Python 3.9 and earlier
+     from typing import TypeAlias
 
      class A: ...
      Alias: TypeAlias = A

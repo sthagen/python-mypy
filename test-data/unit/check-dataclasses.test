@@ -1497,22 +1497,6 @@ class DynamicDef:  # E: "DynamicDef" both defines "__slots__" and is used with "
     x: int
 [builtins fixtures/dataclasses.pyi]
 
-[case testDataclassWithSlotsArgBefore310]
-# flags: --python-version 3.9
-from dataclasses import dataclass
-
-@dataclass(slots=True)  # E: Keyword argument "slots" for "dataclass" is only valid in Python 3.10 and higher
-class Some:
-    x: int
-
-# Possible conflict:
-@dataclass(slots=True)  # E: Keyword argument "slots" for "dataclass" is only valid in Python 3.10 and higher
-class Other:
-    __slots__ = ('x',)
-    x: int
-[builtins fixtures/dataclasses.pyi]
-
-
 [case testDataclassWithSlotsRuntimeAttr]
 # flags: --python-version 3.10
 from dataclasses import dataclass
@@ -1889,23 +1873,6 @@ class One:
     baz: str
 o: One
 reveal_type(o.__match_args__)  # E: "One" has no attribute "__match_args__" \
-                               # N: Revealed type is "Any"
-[builtins fixtures/dataclasses.pyi]
-
-[case testDataclassWithMatchArgsOldVersion]
-# flags: --python-version 3.9
-from dataclasses import dataclass
-@dataclass(match_args=True)
-class One:
-    bar: int
-o: One
-reveal_type(o.__match_args__)  # E: "One" has no attribute "__match_args__" \
-                               # N: Revealed type is "Any"
-@dataclass
-class Two:
-    bar: int
-t: Two
-reveal_type(t.__match_args__)  # E: "Two" has no attribute "__match_args__" \
                                # N: Revealed type is "Any"
 [builtins fixtures/dataclasses.pyi]
 

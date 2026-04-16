@@ -620,11 +620,11 @@ def find_non_ext_metaclass(builder: IRBuilder, cdef: ClassDef, bases: Value) -> 
         declared_metaclass = builder.accept(cdef.metaclass)
     else:
         if cdef.info.typeddict_type is not None:
-            # In Python 3.9, the metaclass for class-based TypedDict is typing._TypedDictMeta.
+            # The metaclass for class-based TypedDict is typing._TypedDictMeta.
             # We can't easily calculate it generically, so special case it.
             return builder.get_module_attr("typing", "_TypedDictMeta", cdef.line)
         elif cdef.info.is_named_tuple:
-            # In Python 3.9, the metaclass for class-based NamedTuple is typing.NamedTupleMeta.
+            # The metaclass for class-based NamedTuple is typing.NamedTupleMeta.
             # We can't easily calculate it generically, so special case it.
             return builder.get_module_attr("typing", "NamedTupleMeta", cdef.line)
 
