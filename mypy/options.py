@@ -381,7 +381,7 @@ class Options:
         self.dump_deps = False
         self.logical_deps = False
         # If True, partial types can't span a module top level and a function
-        self.local_partial_types = False
+        self.local_partial_types = True
         # If True, use the native parser (experimental)
         self.native_parser = False
         # Some behaviors are changed when using Bazel (https://bazel.build).
