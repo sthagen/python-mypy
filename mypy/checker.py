@@ -8503,12 +8503,12 @@ def conditional_types(
     proposed_type: Type
     remaining_type: Type
 
-    proper_type = get_proper_type(current_type)
+    p_current_type = get_proper_type(current_type)
     # factorize over union types: isinstance(A|B, C) -> yes = A_yes | B_yes
-    if isinstance(proper_type, UnionType):
+    if isinstance(p_current_type, UnionType):
         yes_items: list[Type] = []
         no_items: list[Type] = []
-        for union_item in proper_type.items:
+        for union_item in p_current_type.items:
             yes_type, no_type = conditional_types(
                 union_item,
                 proposed_type_ranges,
@@ -8534,7 +8534,7 @@ def conditional_types(
         items[i] = item
     proposed_type = get_proper_type(UnionType.make_union(items))
 
-    if isinstance(proper_type, AnyType):
+    if isinstance(p_current_type, AnyType):
         return proposed_type, current_type
     if isinstance(proposed_type, AnyType):
         # We don't really know much about the proposed type, so we shouldn't
@@ -8585,6 +8585,11 @@ def conditional_types(
         proposed_precise_type,
         consider_runtime_isinstance=consider_runtime_isinstance,
     )
+
+    # Avoid widening the type
+    if is_proper_subtype(p_current_type, proposed_type, ignore_promotions=True):
+        proposed_type = default if default is not None else current_type
+
     return proposed_type, remaining_type
 
 
