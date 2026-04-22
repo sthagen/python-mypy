@@ -424,6 +424,9 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
     # Short names of Var nodes whose previous inferred type has been widened via assignment.
     # NOTE: The names might not be unique, they are only for debugging purposes.
     widened_vars: list[str]
+    # Global variables widened inside a function body, to be propagated to
+    # the module-level binder after the function is type checked (with --allow-redefinition-new).
+    _globals_widened_in_func: list[tuple[NameExpr, Type]]
     globals: SymbolTable
     modules: dict[str, MypyFile]
     # Nodes that couldn't be checked because some types weren't available. We'll run
@@ -488,6 +491,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         self.tscope = Scope()
         self.scope = CheckerScope(tree)
         self.binder = ConditionalTypeBinder(options)
+        self.globals_binder = self.binder
         self.globals = tree.names
         self.return_types = []
         self.dynamic_funcs = []
@@ -496,6 +500,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         self.var_decl_frames = {}
         self.deferred_nodes = []
         self.widened_vars = []
+        self._globals_widened_in_func = []
         self._type_maps = [{}]
         self.module_refs = set()
         self.pass_num = 0
@@ -1490,7 +1495,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                             new_frame.types[key] = narrowed_type
                             self.binder.declarations[key] = old_binder.declarations[key]
 
-                if self.options.allow_redefinition_new and not self.is_stub:
+                if self.options.allow_redefinition and not self.is_stub:
                     # Add formal argument types to the binder.
                     for arg in defn.arguments:
                         # TODO: Add these directly using a fast path (possibly "put")
@@ -1615,6 +1620,16 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                             self.note(message_registry.EMPTY_BODY_ABSTRACT, defn)
 
             self.return_types.pop()
+
+            # Propagate any global variable widenings directly to the
+            # module-level binder (skipping any intermediate class binders).
+            if self._globals_widened_in_func:
+                for lvalue, widened_type in self._globals_widened_in_func:
+                    self.globals_binder.put(lvalue, widened_type)
+                    lit = literal_hash(lvalue)
+                    if lit is not None:
+                        self.globals_binder.declarations[lit] = widened_type
+                self._globals_widened_in_func = []
 
             self.binder = old_binder
 
@@ -3424,7 +3439,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                     # unpleasant, and a generalization of this would
                     # be an improvement!
                     if (
-                        not self.options.allow_redefinition_new
+                        not self.options.allow_redefinition
                         and is_literal_none(rvalue)
                         and isinstance(lvalue, NameExpr)
                         and lvalue.kind == LDEF
@@ -3484,7 +3499,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                         ):
                             lvalue.node.type = remove_instance_last_known_values(lvalue_type)
                 elif (
-                    self.options.allow_redefinition_new
+                    self.options.allow_redefinition
                     and lvalue_type is not None
                     and not isinstance(lvalue_type, PartialType)
                     # Note that `inferred is not None` is not a reliable check here, because
@@ -4467,7 +4482,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         # When revisiting the initial assignment (for example in a loop),
         # treat is as regular if redefinitions are allowed.
         skip_definition = (
-            self.options.allow_redefinition_new
+            self.options.allow_redefinition
             and isinstance(lvalue, NameExpr)
             and isinstance(lvalue.node, Var)
             and lvalue.node.is_inferred
@@ -4498,7 +4513,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         elif isinstance(lvalue, NameExpr):
             lvalue_type = self.expr_checker.analyze_ref_expr(lvalue, lvalue=True)
             if (
-                self.options.allow_redefinition_new
+                self.options.allow_redefinition
                 and isinstance(lvalue.node, Var)
                 # We allow redefinition for function arguments inside function body.
                 # Although we normally do this for variables without annotation, users
@@ -4586,15 +4601,15 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
             init_type = strip_type(init_type)
 
             self.set_inferred_type(name, lvalue, init_type)
-            if self.options.allow_redefinition_new:
+            if self.options.allow_redefinition:
                 self.binder.assign_type(lvalue, init_type, init_type)
 
     def infer_partial_type(self, name: Var, lvalue: Lvalue, init_type: Type) -> bool:
         init_type = get_proper_type(init_type)
         if isinstance(init_type, NoneType) and (
-            isinstance(lvalue, MemberExpr) or not self.options.allow_redefinition_new
+            isinstance(lvalue, MemberExpr) or not self.options.allow_redefinition
         ):
-            # When using --allow-redefinition-new, None types aren't special
+            # When using --allow-redefinition, None types aren't special
             # when inferring simple variable types.
             partial_type = PartialType(None, name)
         elif isinstance(init_type, Instance):
@@ -4842,7 +4857,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                 get_proper_type(lvalue_type), AnyType
             )
 
-            # If redefinitions are allowed (i.e. we have --allow-redefinition-new
+            # If redefinitions are allowed (i.e. we have --allow-redefinition
             # and a variable without annotation) or if a variable has union type we
             # try inferring r.h.s. twice with a fallback type context. The only exception
             # is TypedDicts, they are often useless without context.
@@ -4897,6 +4912,7 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                     not self.refers_to_different_scope(lvalue)
                     and not isinstance(inferred.type, PartialType)
                     and not is_proper_subtype(new_inferred, inferred.type)
+                    and self.can_widen_in_scope(lvalue, inferred.type)
                 ):
                     lvalue_type = make_simplified_union([inferred.type, new_inferred])
                     # Widen the type to the union of original and new type.
@@ -4904,6 +4920,10 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                         # Skip index variables as they are reset on each loop.
                         self.widened_vars.append(inferred.name)
                     self.set_inferred_type(inferred, lvalue, lvalue_type)
+                    if lvalue.kind == GDEF and self.scope.top_level_function() is not None:
+                        # Widening a global inside a function -- record for
+                        # propagation to the module-level binder afterwards.
+                        self._globals_widened_in_func.append((lvalue, lvalue_type))
                     self.binder.put(lvalue, rvalue_type)
                     # TODO: A bit hacky, maybe add a binder method that does put and
                     #       updates declaration?
@@ -4932,13 +4952,29 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         if name.kind == LDEF:
             # TODO: Consider reference to outer function as a different scope?
             return False
-        elif self.scope.top_level_function() is not None:
+        elif self.scope.top_level_function() is not None and name.kind != GDEF:
             # A non-local reference from within a function must refer to a different scope
             return True
         elif name.kind == GDEF and name.fullname.rpartition(".")[0] != self.tree.fullname:
             # Reference to global definition from another module
             return True
         return False
+
+    def can_widen_in_scope(self, name: NameExpr, orig_type: Type) -> bool:
+        """Can a variable type be widened via assignment in the current scope?
+
+        Globals can only be widened from within a function if the original type
+        is None (backward compat with partial type handling of `x = None`).
+
+        See test cases testNewRedefineGlobalVariableNoneInit[1-4], for example.
+        """
+        if (
+            name.kind == GDEF
+            and self.scope.top_level_function() is not None
+            and not isinstance(get_proper_type(orig_type), NoneType)
+        ):
+            return False
+        return True
 
     def check_member_assignment(
         self,
@@ -5011,8 +5047,8 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         # Updating a partial type should invalidate expression caches.
         self.binder.version += 1
         del partial_types[var]
-        if self.options.allow_redefinition_new:
-            # When using --allow-redefinition-new, binder tracks all types of
+        if self.options.allow_redefinition:
+            # When using --allow-redefinition, binder tracks all types of
             # simple variables.
             n = NameExpr(var.name)
             n.node = var
@@ -5427,10 +5463,10 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                             if isinstance(var.node, Var):
                                 new_type = DeletedType(source=source)
                                 var.node.type = new_type
-                                if self.options.allow_redefinition_new:
+                                if self.options.allow_redefinition:
                                     # TODO: Should we use put() here?
                                     self.binder.assign_type(var, new_type, new_type)
-                            if not self.options.allow_redefinition_new:
+                            if not self.options.allow_redefinition:
                                 self.binder.cleanse(var)
             if s.else_body:
                 self.accept(s.else_body)
@@ -8337,7 +8373,16 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
         return None
 
     def visit_global_decl(self, o: GlobalDecl, /) -> None:
-        return None
+        if self.options.allow_redefinition:
+            # Add names to binder, since their types could be widened
+            for name in o.names:
+                sym = self.globals.get(name)
+                if sym and isinstance(sym.node, Var) and sym.node.type is not None:
+                    n = NameExpr(name)
+                    n.node = sym.node
+                    n.kind = GDEF
+                    n.fullname = sym.node.fullname
+                    self.binder.assign_type(n, sym.node.type, sym.node.type)
 
 
 class TypeCheckerAsSemanticAnalyzer(SemanticAnalyzerCoreInterface):
@@ -9154,7 +9199,7 @@ def is_valid_inferred_type(
         # type could either be NoneType or an Optional type, depending on
         # the context. This resolution happens in leave_partial_types when
         # we pop a partial types scope.
-        return is_lvalue_final or (not is_lvalue_member and options.allow_redefinition_new)
+        return is_lvalue_final or (not is_lvalue_member and options.allow_redefinition)
     elif isinstance(proper_type, UninhabitedType):
         return False
     return not typ.accept(InvalidInferredTypes())
