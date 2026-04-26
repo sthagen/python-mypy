@@ -1025,7 +1025,7 @@ class BuildManager:
             if state.tree is not None:
                 # The file was already parsed.
                 continue
-            if not self.fscache.exists(state.xpath):
+            if not self.fscache.exists(state.xpath, real_only=True):
                 # New parser only supports parsing on-disk files.
                 sequential_states.append(state)
                 continue
@@ -1083,7 +1083,6 @@ class BuildManager:
                 elif state.source_hash is None:
                     # At least namespace packages may not have source.
                     state.get_source()
-                state.size_hint = os.path.getsize(state.xpath)
                 state.early_errors = list(self.errors.error_info_map.get(state.xpath, []))
                 state.semantic_analysis_pass1()
                 self.ast_cache[state.id] = (state.tree, state.early_errors, state.source_hash)
@@ -1271,7 +1270,7 @@ class BuildManager:
 
         Raise CompileError if there is a parse error.
         """
-        file_exists = self.fscache.exists(path)
+        file_exists = self.fscache.exists(path, real_only=True)
         t0 = time.time()
         if raw_data:
             # If possible, deserialize from known binary data instead of parsing from scratch.
@@ -3358,9 +3357,17 @@ class State:
         self.priorities = {}  # id -> priority
         self.dep_line_map = {}  # id -> line
         self.dep_hashes = {}
+        # We copy imports as defs to (partially) support some legacy mypy plugins,
+        # most notably old NumPy plugin that does some imports patching, see #21323.
+        copied_imports = False
+        if not self.tree.defs and self.tree.raw_data is not None:
+            self.tree.defs = list(self.tree.imports)
+            copied_imports = True
         dep_entries = manager.all_imported_modules_in_file(
             self.tree
         ) + self.manager.plugin.get_additional_deps(self.tree)
+        if copied_imports:
+            self.tree.defs = []
         for pri, id, line in dep_entries:
             self.priorities[id] = min(pri, self.priorities.get(id, PRI_ALL))
             if id == self.id:
