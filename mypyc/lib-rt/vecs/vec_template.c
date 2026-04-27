@@ -332,6 +332,81 @@ VEC FUNC(Append)(VEC vec, ITEM_C_TYPE x) {
     }
 }
 
+// Extend 'vec' with items from 'iterable', stealing 'vec'.
+// Return extended 'vec', or error vec on failure.
+VEC FUNC(Extend)(VEC vec, PyObject *iterable) {
+    if (Py_TYPE(iterable) == &VEC_TYPE) {
+        return FUNC(ExtendVec)(vec, ((VEC_OBJECT *)iterable)->vec);
+    }
+
+    PyObject *iter = PyObject_GetIter(iterable);
+    if (iter == NULL) {
+        VEC_DECREF(vec);
+        return vec_error();
+    }
+    PyObject *item;
+    while ((item = PyIter_Next(iter)) != NULL) {
+        ITEM_C_TYPE x = UNBOX_ITEM(item);
+        Py_DECREF(item);
+        if (IS_UNBOX_ERROR(x)) {
+            Py_DECREF(iter);
+            VEC_DECREF(vec);
+            return vec_error();
+        }
+        vec = FUNC(Append)(vec, x);
+        if (VEC_IS_ERROR(vec)) {
+            Py_DECREF(iter);
+            return vec_error();
+        }
+    }
+    Py_DECREF(iter);
+    if (PyErr_Occurred()) {
+        VEC_DECREF(vec);
+        return vec_error();
+    }
+    return vec;
+}
+
+// Extend 'dst' with items from 'src' vec, stealing 'dst', borrowing 'src'.
+// Return extended vec, or error vec on failure.
+VEC FUNC(ExtendVec)(VEC dst, VEC src) {
+    if (src.len == 0)
+        return dst;
+    if (unlikely(src.len > PY_SSIZE_T_MAX - dst.len)) {
+        PyErr_NoMemory();
+        VEC_DECREF(dst);
+        return vec_error();
+    }
+    Py_ssize_t new_len = dst.len + src.len;
+    Py_ssize_t cap = dst.buf ? VEC_CAP(dst) : 0;
+    if (new_len <= cap && dst.buf != src.buf) {
+        // Fast path: enough capacity and no aliasing
+        memcpy(dst.buf->items + dst.len, src.buf->items, sizeof(ITEM_C_TYPE) * src.len);
+        dst.len = new_len;
+        return dst;
+    }
+    // Need to reallocate (or dst and src share a buffer)
+    Py_ssize_t new_cap = cap;
+    while (new_cap < new_len) {
+        if (unlikely(new_cap > (PY_SSIZE_T_MAX - 1) / 2)) {
+            new_cap = new_len;
+            break;
+        }
+        new_cap = 2 * new_cap + 1;
+    }
+    VEC new = vec_alloc(new_cap);
+    if (VEC_IS_ERROR(new)) {
+        VEC_DECREF(dst);
+        return vec_error();
+    }
+    if (dst.len > 0)
+        memcpy(new.buf->items, dst.buf->items, sizeof(ITEM_C_TYPE) * dst.len);
+    memcpy(new.buf->items + dst.len, src.buf->items, sizeof(ITEM_C_TYPE) * src.len);
+    new.len = new_len;
+    Py_XDECREF(dst.buf);
+    return new;
+}
+
 // Remove item from 'vec', stealing 'vec'. Return 'vec' with item removed.
 VEC FUNC(Remove)(VEC v, ITEM_C_TYPE x) {
     for (Py_ssize_t i = 0; i < v.len; i++) {
@@ -500,6 +575,8 @@ NAME(API) FEATURES = {
     FUNC(Pop),
     FUNC(Remove),
     FUNC(Slice),
+    FUNC(Extend),
+    FUNC(ExtendVec),
 };
 
 #endif  // MYPYC_EXPERIMENTAL

@@ -5,7 +5,7 @@
 from typing import Final, Any, Iterable, Tuple
 
 from mypy_extensions import i64, i32
-from librt.vecs import vec, append, remove, pop
+from librt.vecs import vec, append, extend, remove, pop
 
 from testutil import assertRaises
 
@@ -535,3 +535,81 @@ def test_cap_negative() -> None:
         vec[i64](capacity=-1)
     with assertRaises(ValueError):
         vec[i64]([1], capacity=-1)
+
+def extend_vec(v: vec[i64], v2: vec[i64]) -> vec[i64]:
+    return extend(v, v2)
+
+def extend_iterable(v: vec[i64], it: Iterable[i64]) -> vec[i64]:
+    return extend(v, it)
+
+def test_extend_vec() -> None:
+    v = extend_vec(vec[i64]([1, 2]), vec[i64]([3, 4, 5]))
+    assert v == vec[i64]([1, 2, 3, 4, 5])
+
+def test_extend_vec_empty_src() -> None:
+    v = extend_vec(vec[i64]([1, 2]), vec[i64]())
+    assert v == vec[i64]([1, 2])
+
+def test_extend_vec_empty_dst() -> None:
+    v = extend_vec(vec[i64](), vec[i64]([10, 20]))
+    assert v == vec[i64]([10, 20])
+
+def test_extend_vec_both_empty() -> None:
+    v = extend_vec(vec[i64](), vec[i64]())
+    assert v == vec[i64]()
+
+def test_extend_iterable() -> None:
+    v = extend_iterable(vec[i64]([1]), [2, 3])
+    assert v == vec[i64]([1, 2, 3])
+
+def test_extend_vec_fits_in_capacity() -> None:
+    v = vec[i64]([1, 2], capacity=3)
+    v = extend_vec(v, vec[i64]([3]))
+    assert v == vec[i64]([1, 2, 3])
+
+def test_extend_vec_exceeds_capacity() -> None:
+    v = vec[i64]([1, 2], capacity=3)
+    v = extend_vec(v, vec[i64]([3, 4, 5]))
+    assert v == vec[i64]([1, 2, 3, 4, 5])
+
+def test_extend_vec_multiple_doublings() -> None:
+    v = vec[i64]([1], capacity=1)
+    src = vec[i64]()
+    for i in range(2, 22):
+        src = append(src, i)
+    v = extend_vec(v, src)
+    assert len(v) == 21
+    assert v[0] == 1
+    assert v[20] == 21
+
+def test_extend_vec_self() -> None:
+    v = vec[i64]()
+    v = append(v, 1)
+    v = append(v, 2)
+    v = append(v, 3)
+    v = extend_vec(v, v)
+    assert v == vec[i64]([1, 2, 3, 1, 2, 3])
+
+def test_extend_vec_shared_buffer_after_pop() -> None:
+    v0 = vec[i64]()
+    v0 = append(v0, 10)
+    v0 = append(v0, 20)
+    v0 = append(v0, 30)
+    v1, _ = pop(v0)
+    # v1 and v0 share a buffer; v1.len=2, v0.len=3
+    v = extend_vec(v1, v0)
+    assert v == vec[i64]([10, 20, 10, 20, 30])
+    # src (v0) must not be corrupted
+    assert v0 == vec[i64]([10, 20, 30])
+
+def test_extend_iterable_runtime_vec_shared_buffer_after_pop() -> None:
+    v0 = vec[i64]()
+    v0 = append(v0, 10)
+    v0 = append(v0, 20)
+    v0 = append(v0, 30)
+    v1, _ = pop(v0)
+    # Statically this uses VecI64Api.extend, but at runtime the iterable is a vec.
+    it: Iterable[i64] = v0
+    v = extend_iterable(v1, it)
+    assert v == vec[i64]([10, 20, 10, 20, 30])
+    assert v0 == vec[i64]([10, 20, 30])
