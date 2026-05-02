@@ -943,3 +943,59 @@ def f(x):
 L0:
     r0 = VecI64Api.from_iterable(x, 0)
     return r0
+
+[case testVecI64CreateFromListObject]
+from librt.vecs import vec
+from mypy_extensions import i64
+
+def from_list(a: list[i64]) -> vec[i64]:
+    return vec[i64](a)
+[out]
+def from_list(a):
+    a :: list
+    r0 :: vec[i64]
+L0:
+    r0 = VecI64Api.from_iterable(a, 0)
+    return r0
+
+[case testVecI64CreateFromTupleObject]
+from librt.vecs import vec
+from mypy_extensions import i64
+
+def from_tuple(a: tuple[i64, ...]) -> vec[i64]:
+    return vec[i64](a)
+[out]
+def from_tuple(a):
+    a :: tuple
+    r0 :: vec[i64]
+L0:
+    r0 = VecI64Api.from_iterable(a, 0)
+    return r0
+
+[case testVecI64ConvertToList]
+from librt.vecs import vec
+from mypy_extensions import i64
+
+def to_list(v: vec[i64]) -> list[i64]:
+    return list(v)
+[out]
+def to_list(v):
+    v :: vec[i64]
+    r0 :: list
+L0:
+    r0 = VecI64Api.to_list(v)
+    return r0
+
+[case testVecI64ConvertToTuple]
+from librt.vecs import vec
+from mypy_extensions import i64
+
+def to_tuple(v: vec[i64]) -> tuple[i64, ...]:
+    return tuple(v)
+[out]
+def to_tuple(v):
+    v :: vec[i64]
+    r0 :: tuple
+L0:
+    r0 = VecI64Api.to_tuple(v)
+    return r0

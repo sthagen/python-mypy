@@ -7,6 +7,7 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdint.h>
+#include "mypyc_util.h"
 
 #ifdef MYPYC_EXPERIMENTAL
 
@@ -281,6 +282,8 @@ typedef struct _VecI64API {
     VecI64 (*from_iterable)(PyObject *, int64_t);
     VecI64 (*extend)(VecI64, PyObject *);
     VecI64 (*extend_vec)(VecI64, VecI64);
+    PyObject *(*to_list)(VecI64);
+    PyObject *(*to_tuple)(VecI64);
 } VecI64API;
 
 // vec[i32] operations + type objects (stored in a capsule)
@@ -299,6 +302,8 @@ typedef struct _VecI32API {
     VecI32 (*from_iterable)(PyObject *, int64_t);
     VecI32 (*extend)(VecI32, PyObject *);
     VecI32 (*extend_vec)(VecI32, VecI32);
+    PyObject *(*to_list)(VecI32);
+    PyObject *(*to_tuple)(VecI32);
 } VecI32API;
 
 // vec[i16] operations + type objects (stored in a capsule)
@@ -317,6 +322,8 @@ typedef struct _VecI16API {
     VecI16 (*from_iterable)(PyObject *, int64_t);
     VecI16 (*extend)(VecI16, PyObject *);
     VecI16 (*extend_vec)(VecI16, VecI16);
+    PyObject *(*to_list)(VecI16);
+    PyObject *(*to_tuple)(VecI16);
 } VecI16API;
 
 // vec[u8] operations + type objects (stored in a capsule)
@@ -335,6 +342,8 @@ typedef struct _VecU8API {
     VecU8 (*from_iterable)(PyObject *, int64_t);
     VecU8 (*extend)(VecU8, PyObject *);
     VecU8 (*extend_vec)(VecU8, VecU8);
+    PyObject *(*to_list)(VecU8);
+    PyObject *(*to_tuple)(VecU8);
 } VecU8API;
 
 // vec[float] operations + type objects (stored in a capsule)
@@ -353,6 +362,8 @@ typedef struct _VecFloatAPI {
     VecFloat (*from_iterable)(PyObject *, int64_t);
     VecFloat (*extend)(VecFloat, PyObject *);
     VecFloat (*extend_vec)(VecFloat, VecFloat);
+    PyObject *(*to_list)(VecFloat);
+    PyObject *(*to_tuple)(VecFloat);
 } VecFloatAPI;
 
 // vec[bool] operations + type objects (stored in a capsule)
@@ -371,6 +382,8 @@ typedef struct _VecBoolAPI {
     VecBool (*from_iterable)(PyObject *, int64_t);
     VecBool (*extend)(VecBool, PyObject *);
     VecBool (*extend_vec)(VecBool, VecBool);
+    PyObject *(*to_list)(VecBool);
+    PyObject *(*to_tuple)(VecBool);
 } VecBoolAPI;
 
 #ifndef MYPYC_DECLARED_tuple_T2VOO
@@ -399,8 +412,11 @@ typedef struct _VecTAPI {
     VecT (*remove)(VecT, PyObject *);
     // TODO: Py_ssize_t
     VecT (*slice)(VecT, int64_t, int64_t);
+    VecT (*from_iterable)(size_t, PyObject *, int64_t);
     VecT (*extend)(VecT, PyObject *, size_t);
     VecT (*extend_vec)(VecT, VecT, size_t);
+    PyObject *(*to_list)(VecT);
+    PyObject *(*to_tuple)(VecT);
 } VecTAPI;
 
 
@@ -715,7 +731,7 @@ static inline int VecT_ItemCheck(VecT v, PyObject *item, size_t item_type) {
 }
 
 VecT VecT_New(Py_ssize_t size, Py_ssize_t cap, size_t item_type);
-PyObject *VecT_FromIterable(size_t item_type, PyObject *iterable, int64_t cap);
+VecT VecT_FromIterable(size_t item_type, PyObject *iterable, int64_t cap);
 PyObject *VecT_Box(VecT vec, size_t item_type);
 VecT VecT_Append(VecT vec, PyObject *x, size_t item_type);
 VecT VecT_Extend(VecT vec, PyObject *iterable, size_t item_type);
@@ -830,6 +846,27 @@ static inline PyObject *VecNested_BoxItem(VecNested v, VecNestedBufItem item) {
             return VecT_Box(v, item_type);
         }
     }
+}
+
+// Growth helpers
+
+static inline Py_ssize_t Vec_GrowCapacity(Py_ssize_t cap) {
+    if (unlikely(cap > (PY_SSIZE_T_MAX - 1) / 2)) {
+        // Allocation will fail at this size, but avoid overflow
+        return PY_SSIZE_T_MAX;
+    }
+    return 2 * cap + 1;
+}
+
+static inline Py_ssize_t Vec_GrowCapacityTo(Py_ssize_t cap, Py_ssize_t min_cap) {
+    while (cap < min_cap) {
+        if (unlikely(cap > (PY_SSIZE_T_MAX - 1) / 2)) {
+            cap = min_cap;
+            break;
+        }
+        cap = 2 * cap + 1;
+    }
+    return cap;
 }
 
 // Misc helpers

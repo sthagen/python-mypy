@@ -135,6 +135,25 @@ inline static int vec_get_buffer(PyObject *obj, Py_buffer *view) {
 }
 #endif
 
+static inline VEC vec_from_sequence(PyObject *seq, int64_t cap, const int is_list) {
+    Py_ssize_t n = is_list ? PyList_GET_SIZE(seq) : PyTuple_GET_SIZE(seq);
+    Py_ssize_t alloc_size = n > cap ? n : cap;
+    VEC v = vec_alloc(alloc_size);
+    if (VEC_IS_ERROR(v))
+        return vec_error();
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = is_list ? PyList_GET_ITEM(seq, i) : PyTuple_GET_ITEM(seq, i);
+        ITEM_C_TYPE x = UNBOX_ITEM(item);
+        if (IS_UNBOX_ERROR(x)) {
+            VEC_DECREF(v);
+            return vec_error();
+        }
+        v.buf->items[i] = x;
+    }
+    v.len = n;
+    return v;
+}
+
 VEC FUNC(FromIterable)(PyObject *iterable, int64_t cap) {
     if (cap < 0) {
         PyErr_SetString(PyExc_ValueError, "capacity must not be negative");
@@ -174,6 +193,12 @@ VEC FUNC(FromIterable)(PyObject *iterable, int64_t cap) {
         return v;
     }
 #endif
+
+    if (PyList_CheckExact(iterable)) {
+        return vec_from_sequence(iterable, cap, 1);
+    } else if (PyTuple_CheckExact(iterable)) {
+        return vec_from_sequence(iterable, cap, 0);
+    }
 
     VEC v = vec_alloc(cap);
     if (VEC_IS_ERROR(v))
@@ -392,7 +417,7 @@ VEC FUNC(Append)(VEC vec, ITEM_C_TYPE x) {
         return vec;
     } else {
         Py_ssize_t cap = vec.buf ? VEC_CAP(vec) : 0;
-        Py_ssize_t new_size = 2 * cap + 1;
+        Py_ssize_t new_size = Vec_GrowCapacity(cap);
         VEC new = vec_alloc(new_size);
         if (VEC_IS_ERROR(new)) {
             // The input v is being consumed/stolen by this function, so on error
@@ -437,14 +462,7 @@ inline static VEC vec_extend_items(
         dst.len = new_len;
         return dst;
     }
-    Py_ssize_t new_cap = cap;
-    while (new_cap < new_len) {
-        if (unlikely(new_cap > (PY_SSIZE_T_MAX - 1) / 2)) {
-            new_cap = new_len;
-            break;
-        }
-        new_cap = 2 * new_cap + 1;
-    }
+    Py_ssize_t new_cap = Vec_GrowCapacityTo(cap, new_len);
     VEC new = vec_alloc(new_cap);
     if (VEC_IS_ERROR(new)) {
         VEC_DECREF(dst);
@@ -528,6 +546,48 @@ VEC FUNC(ExtendVec)(VEC dst, VEC src) {
     if (src.len == 0)
         return dst;
     return vec_extend_items(dst, src.buf->items, src.len, dst.buf == src.buf);
+}
+
+// Convert vec to list, stealing 'v'.
+PyObject *FUNC(ToList)(VEC v) {
+    Py_ssize_t n = v.len;
+    PyObject *list = PyList_New(n);
+    if (list == NULL) {
+        VEC_DECREF(v);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = BOX_ITEM(v.buf->items[i]);
+        if (item == NULL) {
+            Py_DECREF(list);
+            VEC_DECREF(v);
+            return NULL;
+        }
+        PyList_SET_ITEM(list, i, item);
+    }
+    VEC_DECREF(v);
+    return list;
+}
+
+// Convert vec to tuple, stealing 'v'.
+PyObject *FUNC(ToTuple)(VEC v) {
+    Py_ssize_t n = v.len;
+    PyObject *tuple = PyTuple_New(n);
+    if (tuple == NULL) {
+        VEC_DECREF(v);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = BOX_ITEM(v.buf->items[i]);
+        if (item == NULL) {
+            Py_DECREF(tuple);
+            VEC_DECREF(v);
+            return NULL;
+        }
+        PyTuple_SET_ITEM(tuple, i, item);
+    }
+    VEC_DECREF(v);
+    return tuple;
 }
 
 // Remove item from 'vec', stealing 'vec'. Return 'vec' with item removed.
@@ -744,6 +804,8 @@ NAME(API) FEATURES = {
     FUNC(FromIterable),
     FUNC(Extend),
     FUNC(ExtendVec),
+    FUNC(ToList),
+    FUNC(ToTuple),
 };
 
 #endif  // MYPYC_EXPERIMENTAL

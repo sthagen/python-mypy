@@ -46,9 +46,11 @@ from mypyc.ir.rtypes import (
     is_int64_rprimitive,
     is_int_rprimitive,
     is_short_int_rprimitive,
+    list_rprimitive,
     object_rprimitive,
     optional_value_type,
     pointer_rprimitive,
+    tuple_rprimitive,
     vec_api_by_item_type,
     vec_item_type_tags,
 )
@@ -594,3 +596,41 @@ def vec_slice(
         line=line,
     )
     return builder.add(call)
+
+
+def vec_to_list(builder: LowLevelIRBuilder, vec: Value, line: int) -> Value | None:
+    return _vec_to_sequence(builder, vec, line, "to_list", list_rprimitive)
+
+
+def vec_to_tuple(builder: LowLevelIRBuilder, vec: Value, line: int) -> Value | None:
+    return _vec_to_sequence(builder, vec, line, "to_tuple", tuple_rprimitive)
+
+
+def supports_vec_to_sequence(vec_type: RVec) -> bool:
+    return vec_api_by_item_type.get(vec_type.item_type) is not None or vec_type.depth() == 0
+
+
+def _vec_to_sequence(
+    builder: LowLevelIRBuilder, vec: Value, line: int, method: str, result_type: RType
+) -> Value | None:
+    vec_type = vec.type
+    assert isinstance(vec_type, RVec)
+    item_type = vec_type.item_type
+    api_name = vec_api_by_item_type.get(item_type)
+    if api_name is not None:
+        name = f"{api_name}.{method}"
+    elif supports_vec_to_sequence(vec_type):
+        name = f"VecTApi.{method}"
+    else:
+        return None
+    return builder.add(
+        CallC(
+            name,
+            [vec],
+            result_type,
+            steals=[True],
+            is_borrowed=False,
+            error_kind=ERR_MAGIC,
+            line=line,
+        )
+    )

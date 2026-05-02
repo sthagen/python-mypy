@@ -1,6 +1,32 @@
 -- Test cases for vec[t] where t is a boxed, non-vec type (PyObject *).
 -- Also tests for vec[t | None], which uses the same representation.
 
+[case testVecTConvertToList]
+from librt.vecs import vec
+
+def to_list(v: vec[str]) -> list[str]:
+    return list(v)
+[out]
+def to_list(v):
+    v :: vec[str]
+    r0 :: list
+L0:
+    r0 = VecTApi.to_list(v)
+    return r0
+
+[case testVecTConvertToTuple]
+from librt.vecs import vec
+
+def to_tuple(v: vec[str]) -> tuple[str, ...]:
+    return tuple(v)
+[out]
+def to_tuple(v):
+    v :: vec[str]
+    r0 :: tuple
+L0:
+    r0 = VecTApi.to_tuple(v)
+    return r0
+
 [case testVecTCreateEmpty]
 from librt.vecs import vec, append
 
@@ -453,3 +479,54 @@ L0:
     r8 = r7 + 8
     keep_alive r4
     return r4
+
+[case testVecTConstructFromIterable]
+from typing import Iterable
+from librt.vecs import vec
+
+def f(x: Iterable[str]) -> vec[str]:
+    return vec[str](x)
+[out]
+def f(x):
+    x, r0 :: object
+    r1 :: ptr
+    r2 :: vec[str]
+L0:
+    r0 = load_address PyUnicode_Type
+    r1 = r0
+    r2 = VecTApi.from_iterable(r1, x, 0)
+    return r2
+
+[case testVecTCreateFromListObject]
+from librt.vecs import vec
+
+def from_list(a: list[str]) -> vec[str]:
+    return vec[str](a)
+[out]
+def from_list(a):
+    a :: list
+    r0 :: object
+    r1 :: ptr
+    r2 :: vec[str]
+L0:
+    r0 = load_address PyUnicode_Type
+    r1 = r0
+    r2 = VecTApi.from_iterable(r1, a, 0)
+    return r2
+
+[case testVecTCreateFromTupleObject]
+from librt.vecs import vec
+
+def from_tuple(a: tuple[str, ...]) -> vec[str]:
+    return vec[str](a)
+[out]
+def from_tuple(a):
+    a :: tuple
+    r0 :: object
+    r1 :: ptr
+    r2 :: vec[str]
+L0:
+    r0 = load_address PyUnicode_Type
+    r1 = r0
+    r2 = VecTApi.from_iterable(r1, a, 0)
+    return r2

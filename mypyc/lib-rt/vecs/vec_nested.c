@@ -16,12 +16,17 @@ static inline VecNested vec_error() {
     return v;
 }
 
+static inline void vec_track_buffer(VecNested *vec) {
+    PyObject_GC_Track(vec->buf);
+}
+
 static inline PyObject *box_vec_item_by_index(VecNested v, Py_ssize_t index) {
     return VecNested_BoxItem(v, v.buf->items[index]);
 }
 
-// Alloc a partially initialized vec. Caller *must* initialize len and buf->items of the
-// return value.
+// Alloc a partially initialized vec. If size > 0, caller *must* immediately initialize len,
+// and buf->items. Caller *must* also call vec_track_buffer on the returned vec but only
+// after initializing the items.
 static VecNested vec_alloc(Py_ssize_t size, size_t item_type, size_t depth) {
     VecNestedBufObject *buf = PyObject_GC_NewVar(VecNestedBufObject, &VecNestedBufType, size);
     if (buf == NULL)
@@ -31,7 +36,6 @@ static VecNested vec_alloc(Py_ssize_t size, size_t item_type, size_t depth) {
     if (!Vec_IsMagicItemType(item_type))
         Py_INCREF(VEC_BUF_ITEM_TYPE(buf));
     VecNested res = { .buf = buf };
-    PyObject_GC_Track(buf);
     return res;
 }
 
@@ -79,6 +83,7 @@ VecNested VecNested_New(Py_ssize_t size, Py_ssize_t cap, size_t item_type, size_
         vec.buf->items[i].buf = NULL;
     }
     vec.len = size;
+    vec_track_buffer(&vec);
     return vec;
 }
 
@@ -122,6 +127,7 @@ VecNested VecNested_Slice(VecNested vec, int64_t start, int64_t end) {
         Py_XINCREF(item.buf);
         res.buf->items[i] = item;
     }
+    vec_track_buffer(&res);
     return res;
 }
 
@@ -155,6 +161,7 @@ static PyObject *vec_subscript(PyObject *self, PyObject *item) {
             res.buf->items[i] = item;
             j += step;
         }
+        vec_track_buffer(&res);
         return VecNested_Box(res);
     } else {
         PyErr_Format(PyExc_TypeError, "vec indices must be integers or slices, not %.100s",
@@ -255,7 +262,7 @@ VecNested VecNested_Append(VecNested vec, VecNestedBufItem x) {
         vec.len++;
         return vec;
     } else {
-        Py_ssize_t new_size = 2 * cap + 1;
+        Py_ssize_t new_size = Vec_GrowCapacity(cap);
         // TODO: Avoid initializing to zero here
         VecNested new = vec_alloc(new_size, vec.buf->item_type, vec.buf->depth);
         if (VEC_IS_ERROR(new)) {
@@ -280,6 +287,7 @@ VecNested VecNested_Append(VecNested vec, VecNestedBufItem x) {
         }
         new.buf->items[vec.len] = x;
         new.len = vec.len + 1;
+        vec_track_buffer(&new);
         VEC_DECREF(vec);
         return new;
     }
@@ -350,14 +358,7 @@ VecNested VecNested_ExtendVec(VecNested dst, VecNested src) {
         return dst;
     }
     // Need to reallocate (or dst and src share a buffer)
-    Py_ssize_t new_cap = cap;
-    while (new_cap < new_len) {
-        if (new_cap > (PY_SSIZE_T_MAX - 1) / 2) {
-            new_cap = new_len;
-            break;
-        }
-        new_cap = 2 * new_cap + 1;
-    }
+    Py_ssize_t new_cap = Vec_GrowCapacityTo(cap, new_len);
     int aliased = dst.buf == src.buf;
     VecNested new = vec_alloc(new_cap, dst.buf->item_type, dst.buf->depth);
     if (VEC_IS_ERROR(new)) {
@@ -388,6 +389,7 @@ VecNested VecNested_ExtendVec(VecNested dst, VecNested src) {
     }
     memset(new.buf->items + new_len, 0, sizeof(VecNestedBufItem) * (new_cap - new_len));
     new.len = new_len;
+    vec_track_buffer(&new);
     VEC_DECREF(dst);
     return new;
 }
@@ -686,6 +688,7 @@ PyObject *VecNested_FromIterable(size_t item_type, size_t depth, PyObject *itera
         }
     }
     v.len = 0;
+    vec_track_buffer(&v);
 
     PyObject *iter = PyObject_GetIter(iterable);
     if (iter == NULL) {
