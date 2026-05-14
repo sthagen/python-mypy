@@ -364,13 +364,6 @@ Tag: _TypeAlias = int
 # string literal as a type expression.
 _MULTIPLE_WORDS_NONTYPE_RE = re.compile(r'\s*[^\s.\'"|\[]+\s+[^\s.\'"|\[]')
 
-# Matches any valid Python identifier, including identifiers with Unicode characters.
-#
-# [^\d\W] = word character that is not a digit
-# \w = word character
-# \Z = match end of string; does not allow a trailing \n, unlike $
-_IDENTIFIER_RE = re.compile(r"^[^\d\W]\w*\Z", re.UNICODE)
-
 
 class SemanticAnalyzer(
     NodeVisitor[None], SemanticAnalyzerInterface, SemanticAnalyzerPluginInterface, SplittingVisitor
@@ -2410,6 +2403,9 @@ class SemanticAnalyzer(
         if isinstance(t, UnboundType):
             sym = self.lookup_qualified(t.name, t)
             if sym and sym.fullname in UNPACK_TYPE_NAMES:
+                if not t.args:
+                    # Unpack used without arguments, e.g. `Protocol[Unpack]`
+                    return None
                 inner_t = t.args[0]
                 if isinstance(inner_t, UnboundType):
                     return self.analyze_unbound_tvar_impl(inner_t, is_unpacked=True)
@@ -8043,16 +8039,9 @@ class SemanticAnalyzer(
             return
         elif isinstance(maybe_type_expr, StrExpr):
             str_value = maybe_type_expr.value  # cache
-            # Filter out string literals with common patterns that could not
-            # possibly be in a type expression
-            if _MULTIPLE_WORDS_NONTYPE_RE.match(str_value):
-                # A common pattern in string literals containing a sentence.
-                # But cannot be a type expression.
-                maybe_type_expr.as_type = None
-                return
             # Filter out string literals which look like an identifier but
             # cannot be a type expression, for a few common reasons
-            if _IDENTIFIER_RE.fullmatch(str_value):
+            if str_value.isidentifier():
                 sym = self.lookup(str_value, UnboundType(str_value), suppress_errors=True)
                 if sym is None:
                     # Does not refer to anything in the local symbol table
@@ -8078,13 +8067,21 @@ class SemanticAnalyzer(
                         return
             else:  # does not look like an identifier
                 if '"' in str_value or "'" in str_value:
-                    # Only valid inside a Literal[...] type
+                    # Only valid inside a Literal[...] or Annotated[..., ...] type
                     if "[" not in str_value:
-                        # Cannot be a Literal[...] type
+                        # Cannot be a Literal[...] or Annotated[..., ...] type
                         maybe_type_expr.as_type = None
                         return
-                elif str_value == "":
-                    # Empty string is not a valid type
+                elif len(str_value) < 2 or str_value.isspace():
+                    # Whitespace-only strings cannot be valid types. Very short strings can
+                    # only be valid if they are identifiers, but we already checked for those.
+                    maybe_type_expr.as_type = None
+                    return
+                # Filter out string literals with common patterns that could not
+                # possibly be in a type expression
+                if _MULTIPLE_WORDS_NONTYPE_RE.match(str_value):
+                    # A common pattern in string literals containing a sentence.
+                    # But cannot be a type expression.
                     maybe_type_expr.as_type = None
                     return
         elif isinstance(maybe_type_expr, IndexExpr):
