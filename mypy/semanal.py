@@ -1156,7 +1156,8 @@ class SemanticAnalyzer(
                         leading_type = fill_typevars(info)
                     if func.is_class or func.name == "__new__":
                         leading_type = self.class_type(leading_type)
-                    func.type = replace_implicit_first_type(functype, leading_type)
+                    if not has_placeholder(leading_type):
+                        func.type = replace_implicit_first_type(functype, leading_type)
                 elif has_self_type and isinstance(func.unanalyzed_type, CallableType):
                     if not isinstance(get_proper_type(func.unanalyzed_type.arg_types[0]), AnyType):
                         if self.is_expected_self_type(
@@ -6432,7 +6433,7 @@ class SemanticAnalyzer(
             if i > 0:
                 sequence.accept(self)
             # Bind index variables.
-            self.analyze_lvalue(index)
+            self.analyze_lvalue(index, is_index_var=True)
             for cond in conditions:
                 cond.accept(self)
 
