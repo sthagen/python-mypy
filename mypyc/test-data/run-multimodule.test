@@ -1710,6 +1710,41 @@ assert sum_range(0) == 0
 assert sum_range(1) == 0
 assert sum_range(5) == 10
 
+[case testPackageCycleInheritedEq]
+-- Regression test for generating __ne__ from an inherited __eq__ when the
+-- inherited method's declaration is available before its FuncIR body has been
+-- generated. This can happen in package import cycles where __init__ imports a
+-- child module before the subpackage that defines the base class.
+from other.other_child import Child
+
+def make_child() -> Child:
+    return Child()
+
+[file other/__init__.py]
+from other.other_child import Child as Child
+from other.other_subpkg import Base as Base
+
+[file other/other_child.py]
+from other.other_subpkg import Base
+
+class Child(Base):
+    pass
+
+[file other/other_subpkg/__init__.py]
+from other.other_subpkg.other_base import Base as Base
+
+[file other/other_subpkg/other_base.py]
+class Base:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+[file driver.py]
+from native import make_child
+left = make_child()
+right = make_child()
+assert left == right
+assert not (left != right)
+
 [case testSeparateCrossGroupInheritedInit]
 -- Under separate=True, a subclass whose __init__ is inherited from a
 -- different group must call the base's CPyPy_ wrapper through the exports
@@ -1778,3 +1813,86 @@ hello
 [out2]
 empty
 hello
+
+[case testIncrementalCrossModuleInheritedAttrDefaultsWithOverride]
+# Regression: same shape as testIncrementalCrossModuleInheritedAttrDefaults,
+# but the subclass adds an attribute of its own, so generate_attr_defaults_init
+# emits a __mypyc_defaults_setup for it. Before the fix, the recompiled
+# subclass walked the parent's ClassDef.defs.body to collect inherited
+# defaults; when the parent was loaded from mypy's incremental cache that
+# body was empty, so the inherited initialization was dropped and any
+# access to an inherited attribute through compiled code raised
+# "AttributeError: attribute '<name>' of '<base>' undefined".
+import other_a
+
+def test() -> None:
+    c = other_a.Child()
+    # Inherited attributes must still be initialized after the subclass
+    # has been recompiled against a cache-loaded parent.
+    assert c.x == 1
+    assert c.y == "hello"
+    # Own override is set by the subclass's own __mypyc_defaults_setup.
+    assert c.z is True
+    # Method defined on the parent reads an inherited attribute through
+    # the compiled path; this is what crashes pre-fix.
+    assert c.use() == 1
+
+[file other_b.py]
+class Parent:
+    x: int = 1
+    y: str = "hello"
+    z: bool = False
+
+    def use(self) -> int:
+        if self.x:
+            return 1
+        return 0
+
+[file other_a.py]
+from other_b import Parent
+
+class Child(Parent):
+    z: bool = True
+
+[file other_a.py.2]
+from other_b import Parent
+
+class Child(Parent):
+    z: bool = True
+
+def _force_recompile() -> int:
+    return 1
+
+[file driver.py]
+from native import test
+test()
+
+[case testCrossModuleInheritedAttrDefaultsSameGroup]
+# separate: [(["native.py"], "grp1"), (["other_a.py", "other_b.py"], "grp2")]
+# Regression: with the subclass (other_a) and base (other_b) in the same
+# compilation group, IR build runs alphabetically within the group, so
+# the subclass is IR-built before the base. The decision to emit
+# __mypyc_defaults_setup (and a chained call to the ancestor's) must be
+# set up in the prepare phase, before any IR build runs; otherwise the
+# subclass's lookup of the parent's setup decl misses and inherited
+# defaults are lost on a fresh build.
+import other_a
+
+def test() -> None:
+    c = other_a.Child()
+    assert c.x == 1
+    assert c.z is True
+
+[file other_b.py]
+class Parent:
+    x: int = 1
+
+[file other_a.py]
+from other_b import Parent
+
+class Child(Parent):
+    z: bool = True
+
+[file driver.py]
+from native import test
+test()
