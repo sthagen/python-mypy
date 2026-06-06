@@ -230,10 +230,10 @@ class SCC:
         self.mod_ids = ids
         # Direct dependencies, should be populated by the caller.
         self.deps: set[int] = set(deps) if deps is not None else set()
-        # Direct dependencies that have not been processed yet.
-        # Should be populated by the caller. This set may change during graph
-        # processing, while the above stays constant.
-        self.not_ready_deps: set[int] = set()
+        # Count of direct dependencies that have not been processed yet.
+        # Populated by the caller from len(deps); decremented during graph
+        # processing as each dep completes. self.deps above stays constant.
+        self.not_ready_count: int = 0
         # SCCs that (directly) depend on this SCC. Note this is a list to
         # make processing order more predictable. Dependents will be notified
         # that they may be ready in the order in this list.
@@ -4619,10 +4619,11 @@ def process_graph(graph: Graph, manager: BuildManager) -> None:
         ready = []
         for done_scc in done:
             for dependent in done_scc.direct_dependents:
-                scc_by_id[dependent].not_ready_deps.discard(done_scc.id)
-                if not scc_by_id[dependent].not_ready_deps:
-                    not_ready.remove(scc_by_id[dependent])
-                    ready.append(scc_by_id[dependent])
+                dep_scc = scc_by_id[dependent]
+                dep_scc.not_ready_count -= 1
+                if not dep_scc.not_ready_count:
+                    not_ready.remove(dep_scc)
+                    ready.append(dep_scc)
     manager.trace(f"Transitive deps cache size: {sys.getsizeof(manager.transitive_deps_cache)}")
 
 
@@ -5003,9 +5004,10 @@ def prepare_sccs_full(
     for scc in sccs:
         # Remove trivial dependency on itself.
         scc_deps_map[scc].discard(scc)
-        for dep_scc in scc_deps_map[scc]:
+        dep_sccs = scc_deps_map[scc]
+        for dep_scc in dep_sccs:
             scc.deps.add(dep_scc.id)
-            scc.not_ready_deps.add(dep_scc.id)
+        scc.not_ready_count = len(dep_sccs)
     return scc_deps_map
 
 
@@ -5075,18 +5077,33 @@ def deps_filtered(graph: Graph, vertices: AbstractSet[str], id: str, pri_max: in
 
 def transitive_dep_hash(scc: SCC, graph: Graph) -> bytes:
     """Compute stable snapshot of transitive import structure for given SCC."""
-    all_direct_deps = sorted(
-        {
-            dep
-            for id in scc.mod_ids
-            for dep in graph[id].dependencies
-            if graph[id].priorities.get(dep) != PRI_INDIRECT
-        }
-    )
+    mod_ids = scc.mod_ids
+    if len(mod_ids) == 1:
+        # Fast path: State.dependencies is already deduped and never contains
+        # self.id, so we can skip the dedupe set and the self-membership check.
+        (only_id,) = mod_ids
+        st = graph[only_id]
+        priorities = st.priorities
+        all_direct_deps = sorted(
+            dep for dep in st.dependencies if priorities.get(dep) != PRI_INDIRECT
+        )
+        buf = WriteBuffer()
+        for dep_id in all_direct_deps:
+            write_str_bare(buf, dep_id)
+            write_bytes_bare(buf, graph[dep_id].trans_dep_hash)
+        return hash_digest_bytes(buf.getvalue())
+    deps_set: set[str] = set()
+    for id in mod_ids:
+        state = graph[id]
+        priorities = state.priorities
+        for dep in state.dependencies:
+            if priorities.get(dep) != PRI_INDIRECT:
+                deps_set.add(dep)
+    all_direct_deps = sorted(deps_set)
     buf = WriteBuffer()
     for dep_id in all_direct_deps:
         write_str_bare(buf, dep_id)
-        if dep_id not in scc.mod_ids:
+        if dep_id not in mod_ids:
             write_bytes_bare(buf, graph[dep_id].trans_dep_hash)
     return hash_digest_bytes(buf.getvalue())
 
