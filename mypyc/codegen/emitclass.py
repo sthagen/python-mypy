@@ -252,7 +252,7 @@ def generate_class(cl: ClassIR, module: str, emitter: Emitter) -> None:
     getseters_name = f"{name_prefix}_getseters"
     vtable_name = f"{name_prefix}_vtable"
     traverse_name = f"{name_prefix}_traverse"
-    clear_name = f"{name_prefix}_clear"
+    clear_name = emitter.native_function_name(cl.clear)
     dealloc_name = f"{name_prefix}_dealloc"
     methods_name = f"{name_prefix}_methods"
     vtable_setup_name = f"{name_prefix}_trait_vtable_setup"
@@ -267,11 +267,20 @@ def generate_class(cl: ClassIR, module: str, emitter: Emitter) -> None:
         fields["tp_new"] = new_name
 
     managed_dict = has_managed_dict(cl, emitter)
-    if generate_full or managed_dict:
+    # On Python <3.12, subclasses of builtin types (Exception, dict) get an extra __dict__
+    # slot that the inherited base dealloc knows nothing about. Emit our own so it gets freed.
+    needs_builtin_dict_cleanup = (
+        cl.builtin_base is not None
+        and cl.has_dict
+        and not managed_dict
+        and emitter.capi_version < (3, 12)
+    )
+    generate_dealloc_slots = generate_full or managed_dict or needs_builtin_dict_cleanup
+    if generate_dealloc_slots:
         fields["tp_dealloc"] = f"(destructor){name_prefix}_dealloc"
         if not cl.is_acyclic:
             fields["tp_traverse"] = f"(traverseproc){name_prefix}_traverse"
-            fields["tp_clear"] = f"(inquiry){name_prefix}_clear"
+            fields["tp_clear"] = f"(inquiry){clear_name}"
     # Populate .tp_finalize and generate a finalize method only if __del__ is defined for this class.
     del_method = next((e.method for e in cl.vtable_entries if e.name == "__del__"), None)
     if del_method:
@@ -340,11 +349,15 @@ def generate_class(cl: ClassIR, module: str, emitter: Emitter) -> None:
     else:
         fields["tp_basicsize"] = base_size
 
-    if generate_full or managed_dict:
+    if generate_dealloc_slots:
         if not cl.is_acyclic:
             generate_traverse_for_class(cl, traverse_name, emitter)
             emit_line()
-        generate_clear_for_class(cl, clear_name, emitter)
+        generate_clear_for_class(cl, cl.clear, emitter)
+        emit_line()
+        generate_clear_for_class(
+            cl, cl.clear_on_completion, emitter, skip_attrs=cl.attrs_to_keep_alive_on_completion
+        )
         emit_line()
         generate_dealloc_for_class(cl, dealloc_name, clear_name, bool(del_method), emitter)
         emit_line()
@@ -386,7 +399,8 @@ def generate_class(cl: ClassIR, module: str, emitter: Emitter) -> None:
     emit_line()
 
     flags = ["Py_TPFLAGS_DEFAULT", "Py_TPFLAGS_HEAPTYPE", "Py_TPFLAGS_BASETYPE"]
-    if (generate_full or managed_dict) and not cl.is_acyclic:
+    if generate_dealloc_slots and not cl.is_acyclic:
+        # Set explicitly: PyType_Ready won't inherit HAVE_GC once we override tp_dealloc/traverse.
         flags.append("Py_TPFLAGS_HAVE_GC")
     if cl.has_method("__call__"):
         fields["tp_vectorcall_offset"] = "offsetof({}, vectorcall)".format(
@@ -882,25 +896,31 @@ def generate_traverse_for_class(cl: ClassIR, func_name: str, emitter: Emitter) -
         emitter.emit_line(f"rv = PyObject_VisitManagedDict({base_args});")
         emitter.emit_line("if (rv != 0) return rv;")
     elif cl.has_dict:
-        struct_name = cl.struct_name(emitter.names)
-        # __dict__ lives right after the struct and __weakref__ lives right after that
+        # __dict__ lives at tp_dictoffset (== base_size), __weakref__ right after it.
+        base_size = f"sizeof({cl.builtin_base or cl.struct_name(emitter.names)})"
+        emitter.emit_gc_visit(f"*((PyObject **)((char *)self + {base_size}))", object_rprimitive)
         emitter.emit_gc_visit(
-            f"*((PyObject **)((char *)self + sizeof({struct_name})))", object_rprimitive
-        )
-        emitter.emit_gc_visit(
-            f"*((PyObject **)((char *)self + sizeof(PyObject *) + sizeof({struct_name})))",
-            object_rprimitive,
+            f"*((PyObject **)((char *)self + sizeof(PyObject *) + {base_size}))", object_rprimitive
         )
     emitter.emit_line("return rv;")
     emitter.emit_line("}")
 
 
-def generate_clear_for_class(cl: ClassIR, func_name: str, emitter: Emitter) -> None:
-    emitter.emit_line("static int")
-    emitter.emit_line(f"{func_name}({cl.struct_name(emitter.names)} *self)")
+def generate_clear_for_class(
+    cl: ClassIR, func_decl: FuncDecl, emitter: Emitter, skip_attrs: set[str] | None = None
+) -> None:
+    if skip_attrs is None:
+        skip_attrs = set()
+    emitter.emit_line("static " + native_function_header(func_decl, emitter))
     emitter.emit_line("{")
+    emitter.emit_line(
+        f"{cl.struct_name(emitter.names)} *self = "
+        f"({cl.struct_name(emitter.names)} *)cpy_r_self;"
+    )
     for base in reversed(cl.base_mro):
         for attr, rtype in base.attributes.items():
+            if attr in skip_attrs:
+                continue
             emitter.emit_gc_clear(f"self->{emitter.attr(attr)}", rtype)
     base_args = "(PyObject *)self"
     if cl.builtin_base:
@@ -908,14 +928,11 @@ def generate_clear_for_class(cl: ClassIR, func_name: str, emitter: Emitter) -> N
     if has_managed_dict(cl, emitter):
         emitter.emit_line(f"PyObject_ClearManagedDict({base_args});")
     elif cl.has_dict:
-        struct_name = cl.struct_name(emitter.names)
-        # __dict__ lives right after the struct and __weakref__ lives right after that
+        # __dict__ lives at tp_dictoffset (== base_size), __weakref__ right after it.
+        base_size = f"sizeof({cl.builtin_base or cl.struct_name(emitter.names)})"
+        emitter.emit_gc_clear(f"*((PyObject **)((char *)self + {base_size}))", object_rprimitive)
         emitter.emit_gc_clear(
-            f"*((PyObject **)((char *)self + sizeof({struct_name})))", object_rprimitive
-        )
-        emitter.emit_gc_clear(
-            f"*((PyObject **)((char *)self + sizeof(PyObject *) + sizeof({struct_name})))",
-            object_rprimitive,
+            f"*((PyObject **)((char *)self + sizeof(PyObject *) + {base_size}))", object_rprimitive
         )
     emitter.emit_line("return 0;")
     emitter.emit_line("}")
@@ -931,7 +948,13 @@ def generate_dealloc_for_class(
     emitter.emit_line("static void")
     emitter.emit_line(f"{dealloc_func_name}({cl.struct_name(emitter.names)} *self)")
     emitter.emit_line("{")
-    if has_tp_finalize:
+    # Always run the finalizer dance for builtin_base subclasses: we're bypassing
+    # subtype_dealloc, so an inherited tp_finalize (e.g. from an interpreted base's
+    # __del__) would otherwise be skipped. Runtime-gate on tp_finalize so we no-op
+    # when nothing in the MRO defines a finalizer.
+    if has_tp_finalize or cl.builtin_base:
+        if not has_tp_finalize:
+            emitter.emit_line("if (Py_TYPE(self)->tp_finalize) {")
         emitter.emit_line("PyObject *type, *value, *traceback;")
         emitter.emit_line("PyErr_Fetch(&type, &value, &traceback);")
         emitter.emit_line("int res = PyObject_CallFinalizerFromDealloc((PyObject *)self);")
@@ -948,10 +971,12 @@ def generate_dealloc_for_class(
         emitter.emit_line("if (res < 0) {")
         emitter.emit_line("goto done;")
         emitter.emit_line("}")
+        if not has_tp_finalize:
+            emitter.emit_line("}")
     if not cl.is_acyclic:
         emitter.emit_line("PyObject_GC_UnTrack(self);")
     if cl.builtin_base:
-        emitter.emit_line(f"{clear_func_name}(self);")
+        emitter.emit_line(f"{clear_func_name}((PyObject *)self);")
         # For native subclasses of builtins such as dict, the base deallocator
         # is responsible for tearing down base-owned storage and freeing memory.
         # Re-track self if base is GC-aware to match cpython's subtype_dealloc.
@@ -966,7 +991,7 @@ def generate_dealloc_for_class(
         emit_reuse_dealloc(cl, emitter)
     # The trashcan is needed to handle deep recursive deallocations
     emitter.emit_line(f"CPy_TRASHCAN_BEGIN(self, {dealloc_func_name})")
-    emitter.emit_line(f"{clear_func_name}(self);")
+    emitter.emit_line(f"{clear_func_name}((PyObject *)self);")
     emitter.emit_line("Py_TYPE(self)->tp_free((PyObject *)self);")
     emitter.emit_line("CPy_TRASHCAN_END(self)")
     emitter.emit_line("done: ;")
