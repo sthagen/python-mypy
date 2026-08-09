@@ -1050,6 +1050,16 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                 column=t.column,
             )
 
+        if isinstance(sym.node, Var) and sym.node.is_sentinel:
+            typ = get_proper_type(sym.node.type)
+            if isinstance(typ, Instance) and typ.last_known_value is not None:
+                return LiteralType(
+                    value=typ.last_known_value.value,
+                    fallback=typ.last_known_value.fallback,
+                    line=t.line,
+                    column=t.column,
+                )
+
         # None of the above options worked. We parse the args (if there are any)
         # to make sure there are no remaining semanal-only types, then give up.
         t = t.copy_modified(args=self.anal_array(t.args))
@@ -2189,7 +2199,7 @@ def fix_instance(
             else:
                 unpacked = [arg]
             for arg in unpacked:
-                with state.strict_optional_set(options.strict_optional):
+                with state.strict_optional_set(True):
                     # Gradually expand defaults, as they may depend on previous variables.
                     if tv.has_default():
                         arg = expand_type(arg, env)
