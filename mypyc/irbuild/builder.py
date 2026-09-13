@@ -303,7 +303,7 @@ class IRBuilder:
         # Whether the current top-level expression contains a suspension point
         # (await, yield or yield from). A whole-expression borrow can't span such a
         # point, since the borrowed value (and its root) live in registers that are
-        # not spilled into the generator environment across the suspend.
+        # not spilled into the generator frame across the suspend.
         self.expr_has_suspend = False
         # Saved expression state for enclosing functions (see enter()/leave()).
         self.expression_depth_stack: list[int] = []
@@ -1046,14 +1046,18 @@ class IRBuilder:
         self.nonlocal_control.pop()
 
     def make_spill_target(self, type: RType) -> AssignmentTarget:
-        """Moves a given Value instance into the generator class' environment class."""
-        name = f"{TEMP_ATTR_NAME}{self.temp_counter}"
+        """Moves a given Value instance into the private generator frame."""
+        frame = self.fn_info.generator_class
+        # Generator classes for overriding methods can inherit from one another. Include the
+        # module-qualified owning class name so unrelated helper spills don't alias an inherited
+        # struct field.
+        name = f"{TEMP_ATTR_NAME}1_{exported_name(frame.ir.fullname)}_{self.temp_counter}"
         self.temp_counter += 1
-        target = self.add_var_to_env_class(Var(name), type, self.fn_info.generator_class)
+        target = self.add_var_to_class(Var(name), type, frame.ir, frame.self_reg)
         return target
 
     def spill(self, value: Value) -> AssignmentTarget:
-        """Moves a given Value instance into the generator class' environment class."""
+        """Moves a given Value instance into the private generator frame."""
         target = self.make_spill_target(value.type)
         # Shouldn't be able to fail
         self.assign(target, value, NO_TRACEBACK_LINE_NO)
@@ -1061,7 +1065,7 @@ class IRBuilder:
 
     def maybe_spill(self, value: Value) -> Value | AssignmentTarget:
         """
-        Moves a given Value instance into the environment class for generator functions. For
+        Moves a given Value instance into the private frame for generator functions. For
         non-generator functions, leaves the Value instance as it is.
 
         Returns an AssignmentTarget associated with the Value for generator functions and the
@@ -1073,7 +1077,7 @@ class IRBuilder:
 
     def maybe_spill_assignable(self, value: Value) -> Register | AssignmentTarget:
         """
-        Moves a given Value instance into the environment class for generator functions. For
+        Moves a given Value instance into the private frame for generator functions. For
         non-generator functions, allocate a temporary Register.
 
         Returns an AssignmentTarget associated with the Value for generator functions and an
@@ -1226,15 +1230,18 @@ class IRBuilder:
         return typ.is_named_tuple or typ.is_newtype or typ.typeddict_type is not None
 
     def get_final_ref(self, expr: MemberExpr) -> tuple[str, Var, bool] | None:
-        """Check if `expr` is a final class or module attribute.
+        """Check if `expr` is a final class, module or instance attribute.
 
-        Return False for instance attributes.
-
-        This needs to be done differently for class and module attributes to
+        This needs to be done differently for class, module and instance attributes to
         correctly determine fully qualified name. Return a tuple that consists of
         the qualified name, the corresponding Var node, and a flag indicating whether
         the final name was defined in a compiled module. Return None if `expr` does not
         refer to a final attribute.
+
+        Instance attributes only qualify if they are class-body Finals ("X: Final = ..."
+        in the class body), which have no instance slot -- see
+        ClassIR.class_final_attributes. Ordinary instance attributes, including
+        "self.x: Final = ..." set in __init__, return None.
         """
         final_var = None
         if isinstance(expr.expr, RefExpr) and isinstance(expr.expr.node, TypeInfo):
@@ -1254,9 +1261,68 @@ class IRBuilder:
                 final_var = expr.node
                 fullname = expr.node.fullname
                 native = self.is_native_ref_expr(expr)
+        else:
+            # Possibly a class-body Final read through an instance ("self.X"). These
+            # have no instance slot, so read them exactly like "Cls.X".
+            var = self.get_class_final_var(expr)
+            if var is not None:
+                final_var = var
+                fullname = f"{var.info.fullname}.{var.name}"
+                native = self.is_native_module(var.info.module_name)
         if final_var is not None:
             return fullname, final_var, native
         return None
+
+    def get_class_final_var(self, expr: MemberExpr) -> Var | None:
+        """Return the Var for a class-body Final read through an instance expression.
+
+        Return None if `expr` isn't such a read; the caller then falls back to an
+        ordinary attribute read, which finds these names on the type object via
+        py_get_attr (correct, just slower).
+
+        A union-typed object qualifies only when every item resolves to the same
+        declaration, since otherwise the value differs per item.
+        """
+        instance_type = get_proper_type(self.types.get(expr.expr))
+        if isinstance(instance_type, UnionType):
+            items = [get_proper_type(item) for item in instance_type.items]
+        else:
+            items = [instance_type]
+        found: Var | None = None
+        for item in items:
+            if not isinstance(item, Instance):
+                return None
+            var = self.class_final_var_of_instance(item, expr.name)
+            if var is None:
+                return None
+            if found is not None and var is not found:
+                return None
+            found = var
+        return found
+
+    def class_final_var_of_instance(self, instance: Instance, name: str) -> Var | None:
+        """Look up a class-body Final attribute on a single instance type.
+
+        ClassIR is the authority on which attributes were compiled as class-body
+        Finals (mypyc.irbuild.util's is_class_body_final decides, and the answer
+        survives serialization), so we gate on it and only use the mypy symbol table
+        to find the defining class.
+        """
+        class_ir = self.mapper.type_to_ir.get(instance.type)
+        if class_ir is None:
+            return None
+        details = class_ir.class_final_attr_details(name)
+        if details is None:
+            return None
+        _, defining_ir = details
+        sym = instance.type.get(name)
+        if sym is None or not isinstance(sym.node, Var) or not sym.node.is_final:
+            return None
+        # mypy's MRO and mypyc's can differ (traits), so only proceed when both agree
+        # on which class defines the attribute; that class names the static.
+        if sym.node.info.fullname != defining_ir.fullname:
+            return None
+        return sym.node
 
     def emit_load_final(
         self, final_var: Var, fullname: str, name: str, native: bool, typ: Type, line: int
@@ -1571,24 +1637,45 @@ class IRBuilder:
         keep_alive_on_completion: bool = False,
         prefix: str = "",
     ) -> AssignmentTarget:
-        # First, define the variable name as an attribute of the environment class, and then
-        # construct a target for that attribute.
+        return self.add_var_to_class(
+            var,
+            rtype,
+            self.fn_info.env_class,
+            base.curr_env_reg,
+            reassign=reassign,
+            always_defined=always_defined,
+            keep_alive_on_completion=keep_alive_on_completion,
+            prefix=prefix,
+        )
+
+    def add_var_to_class(
+        self,
+        var: SymbolNode,
+        rtype: RType,
+        cls: ClassIR,
+        base: Value,
+        reassign: bool = False,
+        always_defined: bool = False,
+        keep_alive_on_completion: bool = False,
+        prefix: str = "",
+    ) -> AssignmentTarget:
+        """Declare an attribute on a class and construct a target using an explicit base."""
         name = prefix + remangle_redefinition_name(var.name)
-        self.fn_info.env_class.attributes[name] = rtype
+        cls.attributes[name] = rtype
         if keep_alive_on_completion:
-            self.fn_info.env_class.attrs_to_keep_alive_on_completion.add(name)
+            cls.attrs_to_keep_alive_on_completion.add(name)
         if always_defined:
-            self.fn_info.env_class.attrs_with_defaults.add(name)
-        attr_target = AssignmentTargetAttr(base.curr_env_reg, name)
+            cls.attrs_with_defaults.add(name)
+        attr_target = AssignmentTargetAttr(base, name)
 
         if reassign:
             # Read the local definition of the variable, and set the corresponding attribute of
-            # the environment class' variable to be that value.
+            # the class' variable to be that value.
             reg = self.read(self.lookup(var), self.fn_info.fitem.line)
-            self.add(SetAttr(base.curr_env_reg, name, reg, self.fn_info.fitem.line))
+            self.add(SetAttr(base, name, reg, self.fn_info.fitem.line))
 
         # Override the local definition of the variable to instead point at the variable in
-        # the environment class.
+        # the class.
         return self.add_target(var, attr_target)
 
     def is_builtin_ref_expr(self, expr: RefExpr) -> bool:
