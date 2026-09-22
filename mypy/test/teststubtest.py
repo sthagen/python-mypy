@@ -123,6 +123,11 @@ class frozenset(Generic[T]): ...
 
 class function: pass
 
+class sentinel:
+    __name__: str
+    __module__: str
+    def __new__(cls, name: str, /, *, repr: str | None = None) -> sentinel: ...
+
 class int: ...
 class float: ...
 class bool(int): ...
@@ -3074,6 +3079,58 @@ assert annotations
             error=None,
         )
 
+    @collect_cases
+    def test_object_marker(self) -> Iterator[Case]:
+        yield Case(
+            stub="""
+            def f(x: int = ...) -> None: ...
+            """,
+            runtime="""
+            _MISSING = object()
+
+
+            def f(x=_MISSING):
+                pass
+            """,
+            error=None,
+        )
+
+    @collect_cases
+    def test_sentinel_object_like_marker(self) -> Iterator[Case]:
+        yield Case(
+            stub="""
+            def f(x: int = ...) -> None: ...
+            """,
+            runtime="""
+            from typing_extensions import sentinel
+
+            _MISSING = sentinel("_MISSING")
+
+
+            def f(x=_MISSING):
+                pass
+            """,
+            error=None,
+        )
+
+    @collect_cases
+    def test_legacy_sentinel_object_like_marker(self) -> Iterator[Case]:
+        yield Case(
+            stub="""
+            def f(x: int = ...) -> None: ...
+            """,
+            runtime="""
+            from typing_extensions import Sentinel
+
+            _MISSING = Sentinel("_MISSING")
+
+
+            def f(x=_MISSING):
+                pass
+            """,
+            error=None,
+        )
+
 
 def remove_color_code(s: str) -> str:
     return re.sub("\\x1b.*?m", "", s)  # this works!
@@ -3207,7 +3264,7 @@ class StubtestMiscUnit(unittest.TestCase):
         output = run_stubtest(stub="+", runtime="", options=[])
         assert output == (
             "error: not checking stubs due to failed mypy compile:\n{}.pyi:1: "
-            "error: Invalid syntax  [syntax]\n".format(TEST_MODULE_NAME)
+            "error: Expected an expression  [syntax]\n".format(TEST_MODULE_NAME)
         )
 
         output = run_stubtest(stub="def f(): ...\ndef f(): ...", runtime="", options=[])
