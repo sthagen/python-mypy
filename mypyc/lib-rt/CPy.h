@@ -979,6 +979,7 @@ static inline bool CPy_KeepPropagating(void) {
 #define CPy_ExcState() PyThreadState_GET()->exc_info
 
 void CPy_Raise(PyObject *exc);
+void CPy_RaiseFrom(PyObject *exc, PyObject *cause);
 void CPy_Reraise(void);
 void CPyErr_SetObjectAndTraceback(PyObject *type, PyObject *value, PyObject *traceback);
 tuple_T3OOO CPy_CatchError(void);
@@ -1078,14 +1079,12 @@ int CPyStatics_Initialize(PyObject **statics,
                           const int *tuples,
                           const int *frozensets);
 PyObject *CPy_Super(PyObject *builtins, PyObject *self);
-PyObject *CPy_CallReverseOpMethod(PyObject *left, PyObject *right, const char *op,
-                                  PyObject *method);
 
 bool CPyImport_ImportMany(PyObject *modules, CPyModuleCache *statics[], PyObject *globals,
                           PyObject *tb_path, PyObject *tb_function, Py_ssize_t *tb_lines);
 PyObject *CPyImport_ImportFromMany(PyObject *mod_id, PyObject *names, PyObject *as_names,
                                    PyObject *globals);
-PyObject *CPyImport_GetNativeAttrs(PyObject *mod_id, PyObject *names, PyObject *as_names,
+PyObject *CPyImport_GetNativeAttrs(PyObject *mod, PyObject *names, PyObject *as_names,
                                    PyObject *globals);
 PyObject *CPyImport_ImportNative(PyObject *module_name,
                                  PyObject *(*init_only_fn)(void),

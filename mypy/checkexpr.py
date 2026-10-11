@@ -122,8 +122,10 @@ from mypy.plugin import (
 from mypy.semanal_enum import ENUM_BASES
 from mypy.state import state
 from mypy.subtypes import (
+    common_type,
     covers_at_runtime,
     find_member,
+    has_any_type,
     is_same_type,
     is_subtype,
     merge_typevars_in_callables_by_name,
@@ -204,6 +206,7 @@ from mypy.types import (
     has_recursive_types,
     has_type_vars,
     is_named_instance,
+    remove_dups,
     split_with_prefix_and_suffix,
 )
 from mypy.types_utils import (
@@ -228,6 +231,9 @@ ArgChecker: _TypeAlias = Callable[
 # see https://github.com/python/mypy/pull/5255#discussion_r196896335 for discussion.
 MAX_UNIONS: Final = 5
 
+# Maximum number or unique matched overload return types caused by Any
+# ambiguity where we try to find a precise fallback.
+MAX_PRECISE_OVERLOAD_FALLBACK: Final = 8
 
 # Types considered safe for comparisons with --strict-equality due to known behaviour of __eq__.
 # NOTE: All these types are subtypes of AbstractSet.
@@ -334,6 +340,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             tuple[Expression, Type | None],
             tuple[int, Type, list[ErrorInfo], dict[Expression, Type]],
         ] = {}
+        self.freshen_cache: dict[tuple[Context, CallableType], CallableType] = {}
         self.in_lambda_expr = False
 
         self._literal_true: Instance | None = None
@@ -341,6 +348,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
     def reset(self) -> None:
         self.expr_cache.clear()
+        self.freshen_cache.clear()
 
     def visit_name_expr(self, e: NameExpr) -> Type:
         """Type check a name expression.
@@ -1568,7 +1576,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             args: actual argument expressions
             arg_kinds: contains nodes.ARG_* constant for each argument in args
                  describing whether the argument is positional, *arg, etc.
-            context: current expression context, used for inference.
+            context: current expression context, used for inference. Note: for "synthetic"
+                 calls (such as decorators or comprehensions), pass the exact context, so
+                 that two conceptually different calls will not accidentally have same
+                 context (since it is used as a cache key for inference).
             arg_names: names of arguments (optional)
             callable_node: associate the inferred callable type to this node,
                 if specified
@@ -1757,18 +1768,28 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         return AnyType(TypeOfAny.from_error), callee
                     seen_unpack = True
 
-        # This is tricky: return type may contain its own type variables, like in
-        # def [S] (S) -> def [T] (T) -> tuple[S, T], so we need to update their ids
-        # to avoid possible id clashes if this call itself appears in a generic
-        # function body.
+        # If the callable is generic, we need to replace its type variables with unique
+        # meta variables. We however do this at most once per callable, so that expression
+        # cache stays efficient in absence of outer type context.
         ret_type = get_proper_type(callee.ret_type)
-        if isinstance(ret_type, CallableType) and ret_type.variables:
-            fresh_ret_type = freshen_all_functions_type_vars(callee.ret_type)
-            freeze_all_type_vars(fresh_ret_type)
-            callee = callee.copy_modified(ret_type=fresh_ret_type)
+        if callee.is_generic() or isinstance(ret_type, CallableType) and ret_type.is_generic():
+            if (context, callee) in self.freshen_cache:
+                callee = self.freshen_cache[(context, callee)]
+            else:
+                original_callee = callee
+                if isinstance(ret_type, CallableType) and ret_type.is_generic():
+                    # This is tricky: return type may contain its own type variables, like in
+                    # def [S] (S) -> def [T] (T) -> tuple[S, T], so we need to update their ids
+                    # to avoid possible id clashes if this call itself appears in a generic
+                    # function body.
+                    fresh_ret_type = freshen_all_functions_type_vars(callee.ret_type)
+                    freeze_all_type_vars(fresh_ret_type)
+                    callee = callee.copy_modified(ret_type=fresh_ret_type)
+                if callee.is_generic():
+                    callee = freshen_function_type_vars(callee)
+                self.freshen_cache[(context, original_callee)] = callee
 
         if callee.is_generic():
-            callee = freshen_function_type_vars(callee)
             callee = self.infer_function_type_arguments_using_context(callee, context)
 
         formal_to_actual = map_actuals_to_formals(
@@ -3097,11 +3118,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         if not matches:
             return None
         elif any_causes_overload_ambiguity(matches, return_types, arg_types, arg_kinds, arg_names):
+            return_types = remove_dups(return_types)
             # An argument of type or containing the type 'Any' caused ambiguity.
             # We try returning a precise type if we can. If not, we give up and just return 'Any'.
             if all_same_types(return_types):
                 self.chk.store_types(type_maps[0])
                 return return_types[0], inferred_types[0]
+            elif len(return_types) < MAX_PRECISE_OVERLOAD_FALLBACK and (
+                common := common_type(return_types)
+            ):
+                self.chk.store_types(type_maps[0])
+                return common, erase_type(inferred_types[0])
             elif all_same_types([erase_type(typ) for typ in return_types]):
                 self.chk.store_types(type_maps[0])
                 return erase_type(return_types[0]), erase_type(inferred_types[0])
@@ -3311,7 +3338,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             return AnyType(TypeOfAny.special_form)
         callables = cast("list[CallableType]", types)
 
-        combined = union_function_signatures(callables)
+        combined = union_function_signatures(callables, simplify_unions=True)
         if combined is not None:
             return combined
 
@@ -6013,7 +6040,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
             if e.key is None:
                 # Logic and motivation here is similar to check_generator_or_comprehension().
-                arg_types = [self.chk.named_generic_type("typing.Mapping", [ktdef, vtdef])]
+                arg_types = [
+                    self.chk.named_generic_type("_typeshed.SupportsKeysAndGetItem", [ktdef, vtdef])
+                ]
                 arg_kinds = [nodes.ARG_POS]
                 arg_names = [None]
                 args = [e.value]
@@ -6234,7 +6263,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # context, and use enclosing one, see infer_lambda_type_using_context().
             # TODO: consider using cache for more expression kinds.
             elif (
-                isinstance(node, (CallExpr, ListExpr, TupleExpr, DictExpr, OpExpr))
+                isinstance(node, (CallExpr, ListExpr, TupleExpr, DictExpr, OpExpr, MemberExpr))
                 and not (self.in_lambda_expr or self.chk.current_node_deferred)
                 and not self.chk.options.disable_expression_cache
             ):
@@ -6656,37 +6685,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             return typ2
         except TypeTranslationError:
             return None
-
-
-def has_any_type(t: Type, ignore_in_type_obj: bool = False) -> bool:
-    """Whether t contains an Any type"""
-    return t.accept(HasAnyType(ignore_in_type_obj))
-
-
-class HasAnyType(types.BoolTypeQuery):
-    def __init__(self, ignore_in_type_obj: bool) -> None:
-        super().__init__(types.ANY_STRATEGY)
-        self.ignore_in_type_obj = ignore_in_type_obj
-
-    def visit_any(self, t: AnyType) -> bool:
-        return t.type_of_any != TypeOfAny.special_form  # special forms are not real Any types
-
-    def visit_callable_type(self, t: CallableType) -> bool:
-        if self.ignore_in_type_obj and t.is_type_obj():
-            return False
-        return super().visit_callable_type(t)
-
-    def visit_type_var(self, t: TypeVarType) -> bool:
-        default = [t.default] if t.has_default() else []
-        return self.query_types([t.upper_bound, *default] + t.values)
-
-    def visit_param_spec(self, t: ParamSpecType) -> bool:
-        default = [t.default] if t.has_default() else []
-        return self.query_types([t.upper_bound, *default, t.prefix])
-
-    def visit_type_var_tuple(self, t: TypeVarTupleType) -> bool:
-        default = [t.default] if t.has_default() else []
-        return self.query_types([t.upper_bound, *default])
 
 
 def has_coroutine_decorator(t: Type) -> bool:

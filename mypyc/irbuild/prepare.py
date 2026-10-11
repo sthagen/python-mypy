@@ -78,6 +78,7 @@ from mypyc.irbuild.util import (
     get_mypyc_attrs,
     is_class_body_final,
     is_dataclass,
+    is_decorated_class,
     is_extension_class,
     is_trait,
 )
@@ -110,6 +111,7 @@ def build_type_map(
             is_final_class=cdef.info.is_final,
         )
         class_ir.is_ext_class = is_extension_class(module.path, cdef, errors)
+        class_ir.is_decorated = is_decorated_class(cdef)
         if class_ir.is_ext_class:
             class_ir.deletable = cdef.info.deletable_attributes.copy()
         # If global optimizations are disabled, turn of tracking of class children
@@ -210,11 +212,11 @@ def load_type_map(mapper: Mapper, modules: list[MypyFile], deser_ctx: DeserMaps)
                     continue
                 mapper.type_to_ir[node.node] = ir
                 mapper.symbol_fullnames.add(node.node.fullname)
-                # Trait/builtin-base classes have an ir.ctor FuncDecl
-                # but no emitted CPyDef_<ctor>, so a cross-group direct
-                # call would hit an undefined symbol. Mirror the skip
-                # in prepare_init_method.
-                if not ir.is_trait and not ir.builtin_base:
+                # Non-extension, trait and builtin-base classes have no
+                # emitted CPyDef_<ctor>, so a cross-group direct call
+                # would hit an undefined symbol. Mirror the conditions
+                # under which prepare_init_method registers a ctor.
+                if ir.is_ext_class and not ir.is_trait and not ir.builtin_base:
                     mapper.func_to_decl[node.node] = ir.ctor
 
     for module in modules:
@@ -256,6 +258,7 @@ def prepare_func_def(
         kind,
         is_generator=fdef.is_generator,
         is_coroutine=fdef.is_coroutine,
+        is_final=fdef.is_final,
     )
     mapper.func_to_decl[fdef] = decl
     return decl

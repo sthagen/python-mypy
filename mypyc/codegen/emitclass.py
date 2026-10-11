@@ -96,6 +96,7 @@ AS_NUMBER_SLOT_DEFS: SlotTable = {
     "__bool__": ("nb_bool", generate_bool_wrapper),
     "__int__": ("nb_int", generate_dunder_wrapper),
     "__float__": ("nb_float", generate_dunder_wrapper),
+    "__index__": ("nb_index", generate_dunder_wrapper),
     "__neg__": ("nb_negative", generate_dunder_wrapper),
     "__pos__": ("nb_positive", generate_dunder_wrapper),
     "__abs__": ("nb_absolute", generate_dunder_wrapper),
@@ -1498,7 +1499,20 @@ def generate_coroutine_setup(
         wrapper_name = emit_instance(cl.methods["__call__"], cl.coroutine_name)
         struct_name = cl.struct_name(emitter.names)
         attr = emitter.attr(CPYFUNCTION_NAME)
-        emitter.emit_line(f"(({struct_name} *)type)->{attr} = {wrapper_name};")
+        if IS_FREE_THREADED:
+            emitter.emit_line(
+                f"CPy_InitAttrRefIfNull(type, (PyObject **)&(({struct_name} *)type)->{attr}, "
+                f"{wrapper_name});"
+            )
+        else:
+            # Creating the wrapper may run arbitrary code (e.g. via GC), which could
+            # have initialized the attribute already.
+            field = f"(({struct_name} *)type)->{attr}"
+            emitter.emit_line(f"if ({field} == NULL) {{")
+            emitter.emit_line(f"{field} = {wrapper_name};")
+            emitter.emit_line("} else {")
+            emitter.emit_line(f"Py_DECREF({wrapper_name});")
+            emitter.emit_line("}")
         return success()
 
     if not any(fn.decl.is_coroutine for fn in cl.methods.values()):

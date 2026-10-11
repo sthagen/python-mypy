@@ -523,7 +523,8 @@ class IRBuilder:
         # doesn't cause contention.
         self.builder.set_immortal_if_free_threaded(val, line)
 
-    def gen_import(self, module: str, line: int) -> None:
+    def gen_import(self, module: str, line: int) -> Value | None:
+        """Import a module and return it for a same-group native import."""
         self.imports[module] = None
 
         needs_import, out = BasicBlock(), BasicBlock()
@@ -547,7 +548,20 @@ class IRBuilder:
                 module_lock_api = Integer(0, c_pointer_rprimitive)
         else:
             module_id = self.load_str(module, line)
-        self.check_if_module_loaded(module_id, module_cache, line, needs_import, out, import_state)
+        already_loaded = BasicBlock() if is_same_group_native else out
+        self.check_if_module_loaded(
+            module_id, module_cache, line, needs_import, already_loaded, import_state
+        )
+
+        result: Register | None = None
+        if is_same_group_native:
+            # Preserve the module returned by the native import. In particular,
+            # don't look it up again in sys.modules after a circular import:
+            # importlib temporarily removes a module there during finalization.
+            result = Register(object_rprimitive, line=line)
+            self.activate_block(already_loaded)
+            self.add(Assign(result, self.get_module(module, line), line))
+            self.goto(out)
 
         self.activate_block(needs_import)
         if is_same_group_native:
@@ -593,6 +607,8 @@ class IRBuilder:
                 ],
                 line,
             )
+            assert result is not None
+            self.add(Assign(result, value, line))
         else:
             # Import using generic Python C API
             assert module_id is not None
@@ -600,6 +616,7 @@ class IRBuilder:
         if not is_same_group_native:
             self.call_c(import_cache_replace_for_import_op, [module_cache, value], line)
         self.goto_and_activate(out)
+        return result
 
     def check_if_module_loaded(
         self,
@@ -643,8 +660,8 @@ class IRBuilder:
 
         Import the module if needed.
         """
-        self.gen_import(module, line)
-        module_obj = self.get_module(module, line)
+        imported = self.gen_import(module, line)
+        module_obj = imported if imported is not None else self.get_module(module, line)
         return self.py_get_attr(module_obj, attr, line)
 
     def assign_if_null(self, target: Register, get_val: Callable[[], Value], line: int) -> None:
@@ -1233,6 +1250,14 @@ class IRBuilder:
         """Is a type something other than just a class we've created?"""
         return typ.is_named_tuple or typ.is_newtype or typ.typeddict_type is not None
 
+    def is_decorated_class(self, typ: TypeInfo) -> bool:
+        """Might a class decorator have replaced the class with another object?
+
+        The name of the class then refers to the decorated object, not to the class.
+        """
+        ir = self.mapper.type_to_ir.get(typ)
+        return ir is not None and ir.is_decorated
+
     def get_final_ref(self, expr: MemberExpr) -> tuple[str, Var, bool] | None:
         """Check if `expr` is a final class, module or instance attribute.
 
@@ -1738,6 +1763,7 @@ class IRBuilder:
             self.is_native_module_ref_expr(expr)
             and isinstance(expr.node, TypeInfo)
             and not self.is_synthetic_type(expr.node)
+            and not self.is_decorated_class(expr.node)
         ):
             assert expr.fullname
             return self.load_native_type_object(expr.fullname)

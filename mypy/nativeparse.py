@@ -46,6 +46,8 @@ from mypy.cache import (
     read_str_opt,
     read_tag,
 )
+from mypy.errorcodes import error_codes
+from mypy.errors import CompileError
 from mypy.nodes import (
     ARG_KINDS,
     ARG_POS,
@@ -157,7 +159,7 @@ from mypy.types import (
     UnionType,
     UnpackType,
 )
-from mypy.util import unnamed_function
+from mypy.util import decode_python_encoding, hash_digest, unnamed_function
 
 TypeIgnores = list[tuple[int, list[str]]]
 
@@ -239,6 +241,8 @@ def native_parse(
         source_hash,
         mypy_comments,
     ) = parse_to_binary_ast(filename, options, source, skip_function_bodies)
+    ignores, extra_errors = normalize_error_codes(ignores)
+    errors.extend(extra_errors)
     node = MypyFile([], [])
     node.path = filename
     node.raw_data = FileRawData(
@@ -252,6 +256,33 @@ def native_parse(
         mypy_comments,
     )
     return node, errors, ignores
+
+
+def normalize_error_codes(ignores: TypeIgnores) -> tuple[TypeIgnores, list[ParseError]]:
+    """Remove mypy: prefix from error codes (if present)."""
+    normalized = []
+    extra_errors: list[ParseError] = []
+    for line, codes in ignores:
+        new_codes = []
+        for c in codes:
+            if not c.startswith("mypy:"):
+                new_codes.append(c)
+                continue
+            c = c.removeprefix("mypy:")
+            if c in error_codes:
+                new_codes.append(c)
+                continue
+            extra_errors.append(
+                {
+                    "line": line,
+                    "column": -1,
+                    "message": f'Unrecognized error code "{c}"',
+                    "blocker": False,
+                    "code": "misc",
+                }
+            )
+        normalized.append((line, new_codes))
+    return normalized, extra_errors
 
 
 def native_parse_type_string(
@@ -297,16 +328,40 @@ def parse_to_binary_ast(
     source: str | bytes | None = None,
     skip_function_bodies: bool = False,
 ) -> tuple[bytes, list[ParseError], TypeIgnores, bytes, bool, bool, str, list[tuple[int, str]]]:
-    ast_bytes, errors, ignores, import_bytes, ast_data = ast_serialize.parse(
-        filename,
-        source,
-        skip_function_bodies=skip_function_bodies,
-        python_version=options.python_version,
-        platform=options.platform,
-        always_true=options.always_true,
-        always_false=options.always_false,
-        cache_version=5,
-    )
+    try:
+        ast_bytes, errors, ignores, import_bytes, ast_data = ast_serialize.parse(
+            filename,
+            source,
+            skip_function_bodies=skip_function_bodies,
+            python_version=options.python_version,
+            platform=options.platform,
+            always_true=options.always_true,
+            always_false=options.always_false,
+            cache_version=5,
+        )
+    except ValueError as exc:
+        if source is None:
+            # Try reading/encoding manually, since native parser only supports UTF-8.
+            # If we still cannot decode, decode error will bubble up to caller.
+            with open(filename, "rb") as f:
+                source_bytes = f.read()
+                source = decode_python_encoding(source_bytes)
+            ast_bytes, errors, ignores, import_bytes, ast_data = ast_serialize.parse(
+                filename,
+                source,
+                skip_function_bodies=skip_function_bodies,
+                python_version=options.python_version,
+                platform=options.platform,
+                always_true=options.always_true,
+                always_false=options.always_false,
+                cache_version=5,
+            )
+            # Compute hash using original non-UTF-8 bytes, so that
+            # incremental mode works correctly.
+            ast_data["source_hash"] = hash_digest(source_bytes)
+        else:
+            # Convert everything unexpected to a standard-looking blocker.
+            raise CompileError([f"{filename}: error: Cannot parse file: {exc}"]) from exc
     return (
         ast_bytes,
         errors,
